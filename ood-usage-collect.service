@@ -1,0 +1,9 @@
+[Unit]
+Description=Aggregate Open OnDemand access logs into the usage database
+After=httpd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ood-usage-collect
+Nice=10
+IOSchedulingClass=idle

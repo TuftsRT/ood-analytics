@@ -1,0 +1,788 @@
+#!/usr/bin/env python3
+"""
+ood-usage-collect: aggregate Open OnDemand Apache access logs into a
+long-lived SQLite database, so usage history outlives log rotation.
+
+Run as root (the Apache logs are root-readable) from cron or a systemd
+timer. It is safe to run as often as you like: every log file is
+fingerprinted by its first line and read from a stored byte offset, so a
+line is never counted twice, across rename rotation, copytruncate, and
+later compression (.gz/.bz2/.xz) alike.
+
+Only daily aggregates are stored (day, user, category, item, count).
+Raw log lines are never copied into the database.
+
+When Slurm accounting is available it also records wall time, core time,
+and GPU time of finished interactive app jobs, found by job name. By default
+it uses Slurm only if an OnDemand cluster config uses the Slurm adapter.
+
+Requires Python 3.6+ and SQLite 3.24+ (EL8/EL9 stock versions are fine).
+"""
+
+import argparse
+import bz2
+import calendar
+import collections
+import datetime
+import fcntl
+import glob
+import grp
+import gzip
+import hashlib
+import json
+import lzma
+import os
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+
+DEFAULT_CONFIG = os.environ.get("OOD_USAGE_CONFIG", "/etc/ood/config/ood_usage.json")
+SCHEMA_VERSION = "4"
+UNKNOWN_USER = "(unknown)"
+
+DEFAULTS = {
+    "db_path": "/var/lib/ood-usage/usage.db",
+    # Group that may read the database (should match the group allowed to
+    # open the dashboard app). None leaves ownership alone.
+    "db_group": None,
+    "log_globs": ["/var/log/httpd/*_access_ssl.log*"],
+    # How far back to read access logs and Slurm accounting that haven't been
+    # collected yet, e.g. on the first run. None reads everything available.
+    # If the collector hasn't run for longer than this, it still reads back
+    # to its last run so there's no gap.
+    "lookback_days": 7,
+    # A new "session" starts when a user is idle longer than this.
+    "session_gap_minutes": 30,
+    # Auth callbacks are often logged before REMOTE_USER is known. The login
+    # is attributed to the next authenticated request from the same client
+    # IP within this window, otherwise it is recorded as "(unknown)".
+    "login_attribution_seconds": 300,
+    # Optional regex applied to REMOTE_USER; capture group 1 becomes the
+    # stored user name, e.g. "^([^@]+)@" turns jdoe01@tufts.edu into jdoe01.
+    "user_regex": None,
+    "lowercase_users": True,
+    "exclude_users": [],
+    # Matched against "METHOD /uri?query" for responses with a 3xx status.
+    "login_patterns": [
+        "^GET /oidc\\?(?:[^ ]*&)?code=",
+        "^POST /oidc/?$",
+        "^POST /Shibboleth\\.sso/SAML2/POST",
+        "^GET /dex/callback",
+    ],
+    # [label, regex] pairs matched against the URL path; first match wins.
+    "app_patterns": [
+        ["Files", "^/pun/sys/(?:dashboard/)?files(?:/|$)"],
+        ["Active Jobs", "^/pun/sys/(?:dashboard/)?activejobs(?:/|$)"],
+        ["Job Composer", "^/pun/sys/myjobs(?:/|$)"],
+        ["Projects", "^/pun/sys/dashboard/projects(?:/|$)"],
+        ["Shell", "^/pun/sys/shell(?:/|$)"],
+        ["My Interactive Sessions", "^/pun/sys/dashboard/batch_connect/sessions(?:/|$)"],
+        ["Interactive App Forms", "^/pun/sys/dashboard/batch_connect/"],
+        ["Interactive App Connections", "^/r?node/"],
+        ["Dashboard", "^/pun/sys/dashboard/?$"],
+    ],
+    # Count unmatched /pun/<type>/<app> requests under "<type>/<app>".
+    "count_other_passenger_apps": True,
+    # Response time appended as the last field of each log line, which the
+    # default combined format doesn't have. "%D" (microseconds, recommended),
+    # "%{ms}T" (milliseconds), "%T" (seconds), or None to ignore it. Lines
+    # without the field are still counted, just not timed.
+    "response_time_format": "%D",
+    # Requests slower than this count as slow on the issues page.
+    "slow_request_seconds": 3,
+    # Wall time of interactive apps comes from the scheduler, since the access
+    # log only shows the launch. "auto" uses Slurm accounting (sacct) if any
+    # cluster in ood_clusters_dir has `adapter: slurm`; "slurm" forces it on;
+    # "off" turns it off.
+    "walltime": "auto",
+    "ood_clusters_dir": "/etc/ood/config/clusters.d",
+    # None takes sacct from each cluster's `bin` (or bin_overrides.sacct),
+    # falling back to sacct on PATH.
+    "sacct_path": None,
+    # Passed to sacct -M, one query per cluster. None takes the `cluster`
+    # names from the OnDemand cluster configs, or the local cluster.
+    "slurm_clusters": None,
+    # Regexes matched against the Slurm job name; group 1 is the app name.
+    # OnDemand's default is "[portal/]sys/dashboard/sys/<app>"; many sites
+    # set job_name in submit.yml.erb instead, e.g. "OnDemand/<App>".
+    "slurm_job_patterns": [
+        "^OnDemand/(.+)$",
+        "^(?:[^/]+/)?sys/dashboard/(?:sys/)?(.+)$",
+    ],
+}
+
+# Keys read by the dashboard app from the same config file.
+WEB_ONLY_KEYS = {"site_name", "show_top_users"}
+
+LINE_RE = re.compile(
+    r'^(?P<ip>\S+) \S+ (?P<user>\S+) \[(?P<ts>[^\]]+)\] '
+    r'"(?P<method>[A-Z]+) (?P<uri>\S+)(?: [^"]*)?" (?P<status>\d{3})\b'
+)
+# Interactive app submission. Success is a redirect to the sessions page;
+# a validation or submit error re-renders the form or returns 4xx/5xx.
+BC_LAUNCH_RE = re.compile(
+    r"^/pun/(?:sys|dev|usr/[^/]+)/dashboard/batch_connect/"
+    r"(?P<token>(?:sys|dev|usr/[^/]+)/.+?)/session_contexts/?$"
+)
+OTHER_APP_RE = re.compile(r"^/pun/(?P<type>sys|dev|usr/[^/]+)/(?P<app>[^/]+)")
+STATIC_RE = re.compile(
+    r"(?:/assets/|/packs/|/favicon\.ico$|\.(?:js|css|map|png|jpe?g|gif|svg|ico|woff2?|ttf|eot)$)"
+)
+# A single number after the last quoted field (the User-Agent in combined
+# format) is the response time. Two or more, as in combinedio's %I %O, are not.
+TIMING_RE = re.compile(r'"\s+(\d+(?:\.\d+)?)\s*$')
+TIMING_SCALE = {"%D": 1e-6, "%{us}T": 1e-6, "%{ms}T": 1e-3, "%T": 1.0, "%{s}T": 1.0}
+# Upper edges, in seconds, of the response-time histogram buckets; the last
+# bucket is everything slower. Percentiles are reported to bucket resolution.
+LATENCY_EDGES = [0.1, 0.25, 0.5, 1, 2, 5, 10, 30]
+# Apache sends users here to start their per-user web server (PUN).
+PUN_START_RE = re.compile(r"^/nginx/(?:start|init)\b")
+# Proxied traffic to running interactive apps includes websockets and
+# long-polling, so its timings say nothing about page loads.
+UNTIMED_AREAS = {"Interactive App Connections"}
+
+MONTHS = {m: i for i, m in enumerate(
+    ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+     "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"], 1)}
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS usage (
+    day      TEXT    NOT NULL,           -- YYYY-MM-DD, server local time
+    user     TEXT    NOT NULL,
+    category TEXT    NOT NULL,           -- active|session|login|launch|launch_fail|app|
+                                         -- hour_utc|job|walltime|core_time|gpu_time|
+                                         -- req|http_4xx|http_5xx|latency|slow|
+                                         -- pun_start|pun_start_fail
+                                         -- (req and latency are site-wide: user '')
+    item     TEXT    NOT NULL DEFAULT '',
+    count    INTEGER NOT NULL,           -- seconds for the *time categories
+    PRIMARY KEY (day, user, category, item)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS usage_category_day ON usage (category, day);
+CREATE TABLE IF NOT EXISTS file_state (
+    fingerprint TEXT PRIMARY KEY,
+    path        TEXT,
+    offset      INTEGER NOT NULL,
+    complete    INTEGER NOT NULL DEFAULT 0,
+    updated     INTEGER
+);
+CREATE TABLE IF NOT EXISTS user_last_seen (
+    user TEXT PRIMARY KEY,
+    ts   INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS slurm_jobs (
+    jobid TEXT PRIMARY KEY,               -- "<cluster>:<jobid>" of jobs already counted
+    end   INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+"""
+
+UPSERT_USAGE = (
+    "INSERT INTO usage (day, user, category, item, count) VALUES (?, ?, ?, ?, ?) "
+    "ON CONFLICT (day, user, category, item) DO UPDATE SET count = count + excluded.count"
+)
+UPSERT_LAST_SEEN = (
+    "INSERT INTO user_last_seen (user, ts) VALUES (?, ?) "
+    "ON CONFLICT (user) DO UPDATE SET ts = max(ts, excluded.ts)"
+)
+UPSERT_FILE = (
+    "INSERT INTO file_state (fingerprint, path, offset, complete, updated) VALUES (?, ?, ?, ?, ?) "
+    "ON CONFLICT (fingerprint) DO UPDATE SET path = excluded.path, offset = excluded.offset, "
+    "complete = excluded.complete, updated = excluded.updated"
+)
+
+VERBOSE = False
+
+
+def log(msg):
+    print("ood-usage-collect: " + msg, file=sys.stderr)
+
+
+def debug(msg):
+    if VERBOSE:
+        log(msg)
+
+
+def load_config(path, explicit):
+    cfg = dict(DEFAULTS)
+    if os.path.exists(path):
+        with open(path) as fh:
+            user_cfg = json.load(fh)
+        unknown = set(user_cfg) - set(DEFAULTS) - WEB_ONLY_KEYS
+        if unknown:
+            log("warning: ignoring unknown config keys: " + ", ".join(sorted(unknown)))
+        cfg.update({k: v for k, v in user_cfg.items() if k in DEFAULTS})
+    elif explicit:
+        raise SystemExit("ood-usage-collect: config file not found: " + path)
+    else:
+        log("warning: %s not found, using built-in defaults" % path)
+    return cfg
+
+
+def parse_ts(ts):
+    """'09/Oct/2026:13:55:36 -0400' -> ('2026-10-09', epoch seconds)."""
+    d, mon, rest = ts.split("/", 2)
+    mo = MONTHS[mon]
+    year, hh, mm, ss = int(rest[0:4]), int(rest[5:7]), int(rest[8:10]), int(rest[11:13])
+    tz = rest[14:19]
+    offset = (int(tz[1:3]) * 3600 + int(tz[3:5]) * 60) * (1 if tz[0] == "+" else -1)
+    epoch = calendar.timegm((year, mo, int(d), hh, mm, ss)) - offset
+    return "%04d-%02d-%02d" % (year, mo, int(d)), epoch
+
+
+def is_compressed(path):
+    return path.endswith((".gz", ".bz2", ".xz"))
+
+
+def open_log(path):
+    if path.endswith(".gz"):
+        return gzip.open(path, "rb")
+    if path.endswith(".bz2"):
+        return bz2.open(path, "rb")
+    if path.endswith(".xz"):
+        return lzma.open(path, "rb")
+    return open(path, "rb")
+
+
+def inspect_file(path):
+    """Return (fingerprint, first_epoch) or None if the file can't be used yet."""
+    try:
+        with open_log(path) as fh:
+            first = fh.readline(65536)
+    except (OSError, EOFError, lzma.LZMAError) as exc:
+        log("warning: cannot read %s: %s" % (path, exc))
+        return None
+    if not first.endswith(b"\n"):
+        return None  # empty, or the first line is still being written
+    fp = hashlib.sha256(first).hexdigest()
+    m = LINE_RE.match(first.decode("utf-8", "replace"))
+    try:
+        first_epoch = parse_ts(m.group("ts"))[1] if m else os.path.getmtime(path)
+    except (KeyError, ValueError, IndexError):
+        first_epoch = os.path.getmtime(path)
+    return fp, first_epoch
+
+
+class Aggregator(object):
+    def __init__(self, cfg, last_seen):
+        self.gap = int(cfg["session_gap_minutes"]) * 60
+        self.attrib = int(cfg["login_attribution_seconds"])
+        self.user_re = re.compile(cfg["user_regex"]) if cfg["user_regex"] else None
+        self.lower = bool(cfg["lowercase_users"])
+        self.exclude = set(u.lower() if self.lower else u for u in cfg["exclude_users"])
+        self.login_res = [re.compile(p) for p in cfg["login_patterns"]]
+        self.app_res = [(label, re.compile(rx)) for label, rx in cfg["app_patterns"]]
+        self.other_apps = bool(cfg["count_other_passenger_apps"])
+        fmt = cfg["response_time_format"]
+        if fmt and fmt not in TIMING_SCALE:
+            raise SystemExit("ood-usage-collect: response_time_format must be one of %s or null"
+                             % ", ".join(sorted(TIMING_SCALE)))
+        self.timing_scale = TIMING_SCALE[fmt] if fmt else None
+        self.slow = float(cfg["slow_request_seconds"])
+        self.last_seen = last_seen
+        self.dirty_users = set()
+        self.pending = {}  # client ip -> (epoch, day) of an unattributed login
+        self.counts = collections.Counter()
+        self.lines = 0
+        self.skipped = 0
+        self.old = 0
+        self.cutoff = None  # epoch; earlier lines are outside the lookback
+
+    def add(self, day, user, category, item="", n=1):
+        self.counts[(day, user, category, item)] += n
+
+    def norm_user(self, raw):
+        if raw in ("-", ""):
+            return None
+        user = raw
+        if self.user_re:
+            m = self.user_re.match(user)
+            if m and m.groups():
+                user = m.group(1)
+        return user.lower() if self.lower else user
+
+    def queue_login(self, ip, epoch, day):
+        prev = self.pending.get(ip)
+        if prev:
+            self.add(prev[1], UNKNOWN_USER, "login")
+        self.pending[ip] = (epoch, day)
+
+    def flush_pending(self):
+        for epoch, day in self.pending.values():
+            self.add(day, UNKNOWN_USER, "login")
+        self.pending.clear()
+
+    def process_line(self, line):
+        m = LINE_RE.match(line)
+        if not m:
+            self.skipped += 1
+            return
+        try:
+            day, epoch = parse_ts(m.group("ts"))
+        except (KeyError, ValueError, IndexError):
+            self.skipped += 1
+            return
+        if self.cutoff is not None and epoch < self.cutoff:
+            self.old += 1
+            return
+        self.lines += 1
+        ip = m.group("ip")
+        method = m.group("method")
+        uri = m.group("uri")
+        status = int(m.group("status"))
+        user = self.norm_user(m.group("user"))
+        excluded = user is not None and user in self.exclude
+
+        if 300 <= status < 400:
+            request = method + " " + uri
+            if any(rx.search(request) for rx in self.login_res):
+                if user is None:
+                    self.queue_login(ip, epoch, day)
+                elif not excluded:
+                    self.add(day, user, "login")
+
+        path = uri.split("?", 1)[0]
+        if not excluded:
+            self.record_health(day, user, line, method, path, status)
+
+        if user is None:
+            return
+
+        pending = self.pending.pop(ip, None)
+        if pending and not excluded:
+            p_epoch, p_day = pending
+            who = user if 0 <= epoch - p_epoch <= self.attrib else UNKNOWN_USER
+            self.add(p_day, who, "login")
+        if excluded:
+            return
+
+        last = self.last_seen.get(user)
+        if last is None or epoch - last > self.gap:
+            self.add(day, user, "session")
+        if last is None or epoch > last:
+            self.last_seen[user] = epoch
+            self.dirty_users.add(user)
+        self.add(day, user, "active")
+        # One row per user per active hour feeds the day-of-week by hour-of-day
+        # heatmap. The hour is in UTC ("YYYY-MM-DDTHH") so the dashboard can
+        # show it in the viewer's own time zone.
+        self.add(day, user, "hour_utc", time.strftime("%Y-%m-%dT%H", time.gmtime(epoch)))
+
+        if method == "POST":
+            bc = BC_LAUNCH_RE.match(path)
+            if bc:
+                self.add(day, user, "launch" if 300 <= status < 400 else "launch_fail",
+                         bc.group("token"))
+                return
+        if STATIC_RE.search(path):
+            return
+        label = self.label(path)
+        if label:
+            self.add(day, user, "app", label)
+
+    def label(self, path):
+        """The app_patterns label, or "<type>/<app>" for other Passenger apps."""
+        for label, rx in self.app_res:
+            if rx.search(path):
+                return label
+        if self.other_apps:
+            om = OTHER_APP_RE.match(path)
+            if om:
+                return "%s/%s" % (om.group("type"), om.group("app"))
+        return None
+
+    def record_health(self, day, user, line, method, path, status):
+        """Request counts, errors, response times, and PUN starts for the issues page.
+        Unauthenticated requests count too, under "(unknown)"."""
+        who = user or UNKNOWN_USER
+        if PUN_START_RE.match(path):
+            area = "Web server start"
+            self.add(day, who, "pun_start")
+            if status >= 400:
+                self.add(day, who, "pun_start_fail")
+        else:
+            area = self.label(path) or "Other"
+        self.add(day, "", "req", area)
+        if status >= 500:
+            self.add(day, who, "http_5xx", "%d %s" % (status, area))
+        elif status >= 400:
+            self.add(day, who, "http_4xx", "%d %s" % (status, area))
+
+        if self.timing_scale is None or status == 101 or area in UNTIMED_AREAS:
+            return  # 101 is a websocket; its time is how long it stayed open
+        if STATIC_RE.search(path):
+            return
+        tm = TIMING_RE.search(line)
+        if not tm:
+            return
+        secs = float(tm.group(1)) * self.timing_scale
+        bucket = len(LATENCY_EDGES)
+        for i, edge in enumerate(LATENCY_EDGES):
+            if secs <= edge:
+                bucket = i
+                break
+        self.add(day, "", "latency", "%s|%d" % (area, bucket))
+        if secs > self.slow:
+            self.add(day, who, "slow", area)
+
+    def write(self, conn):
+        conn.executemany(UPSERT_USAGE, [k + (n,) for k, n in self.counts.items()])
+        conn.executemany(UPSERT_LAST_SEEN, [(u, self.last_seen[u]) for u in self.dirty_users])
+        self.counts.clear()
+        self.dirty_users.clear()
+
+
+def process_file(conn, agg, path, fp):
+    compressed = is_compressed(path)
+    row = conn.execute("SELECT offset, complete FROM file_state WHERE fingerprint = ?",
+                       (fp,)).fetchone()
+    offset = row[0] if row else 0
+    if row and row[1]:
+        return 0
+    if not compressed and os.path.getsize(path) <= offset:
+        return 0
+
+    before = agg.lines
+    pos = offset
+    with open_log(path) as fh:
+        if offset:
+            fh.seek(offset)
+        for raw in fh:
+            if not raw.endswith(b"\n") and not compressed:
+                break  # partial line still being written; pick it up next run
+            pos += len(raw)
+            agg.process_line(raw.decode("utf-8", "replace"))
+
+    # Counts and the new offset commit together, so a crash never double counts.
+    with conn:
+        agg.write(conn)
+        conn.execute(UPSERT_FILE, (fp, path, pos, 1 if compressed else 0, int(time.time())))
+    return agg.lines - before
+
+
+SACCT_STATES = "CD,CA,F,TO,NF,OOM,PR,DL,BF"  # terminal states only
+SACCT_FIELDS = "JobIDRaw,User,JobName,Start,End,AllocCPUS,AllocTRES"
+GPU_TRES_RE = re.compile(r"(?:^|,)gres/gpu=(\d+)")
+SLURM_CHUNK = 30 * 86400
+SLURM_OVERLAP = 86400  # re-read a day each run in case accounting lags
+
+
+def split_by_day(start, end):
+    """Yield (YYYY-MM-DD, seconds) for each local day that [start, end) covers."""
+    cur = start
+    while cur < end:
+        d = datetime.datetime.fromtimestamp(cur).date()
+        midnight = time.mktime((d + datetime.timedelta(days=1)).timetuple())
+        stop = min(end, int(midnight))
+        yield d.isoformat(), stop - cur
+        cur = stop
+
+
+def read_simple_yaml(text):
+    """Nested mappings of scalars from a YAML file; enough for OnDemand cluster
+    configs when PyYAML isn't installed. Lists and block scalars are skipped."""
+    root, block = {}, None
+    stack = [(-1, root)]
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped == "---":
+            continue
+        indent = len(line) - len(line.lstrip(" "))
+        if block is not None:
+            if indent > block:
+                continue
+            block = None
+        m = re.match(r"\s*([\w-]+)\s*:(?:\s+(.*))?$", line)
+        if not m:
+            continue
+        key, value = m.group(1), (m.group(2) or "").strip()
+        if value and value[0] not in "\"'":
+            value = value.split(" #", 1)[0].strip()
+        while stack[-1][0] >= indent:
+            stack.pop()
+        parent = stack[-1][1]
+        if not value:
+            parent[key] = {}
+            stack.append((indent, parent[key]))
+        elif value[0] in "|>":
+            parent[key] = ""
+            block = indent
+        else:
+            parent[key] = value.strip("\"'")
+    return root
+
+
+def ood_slurm_clusters(clusters_dir):
+    """[(cluster name or None, sacct path or None)] for Slurm clusters in OnDemand's config."""
+    try:
+        import yaml
+        load = yaml.safe_load
+    except ImportError:
+        load = read_simple_yaml
+    found = []
+    for path in sorted(glob.glob(os.path.join(clusters_dir, "*.yml"))):
+        try:
+            with open(path) as fh:
+                job = ((load(fh.read()) or {}).get("v2") or {}).get("job") or {}
+        except Exception as exc:  # a broken cluster file shouldn't stop the run
+            log("warning: cannot parse %s: %s" % (path, exc))
+            continue
+        if str(job.get("adapter", "")).lower() != "slurm":
+            continue
+        overrides = job.get("bin_overrides") or {}
+        sacct = overrides.get("sacct") if isinstance(overrides, dict) else None
+        if not sacct and job.get("bin"):
+            sacct = os.path.join(str(job["bin"]), "sacct")
+        found.append((job.get("cluster") or None, sacct))
+        debug("%s: Slurm cluster %s" % (path, job.get("cluster") or "(local)"))
+    return found
+
+
+def slurm_targets(cfg):
+    """[(cluster name or None, sacct path)] to query, or [] when wall time is off."""
+    mode = str(cfg["walltime"]).lower()
+    if mode == "off":
+        return []
+    if mode not in ("auto", "slurm"):
+        log("warning: walltime must be auto, slurm, or off; got %r" % cfg["walltime"])
+        return []
+    found = ood_slurm_clusters(cfg["ood_clusters_dir"])
+    if mode == "auto" and not found:
+        debug("no Slurm cluster in %s; skipping wall time" % cfg["ood_clusters_dir"])
+        return []
+    if cfg["slurm_clusters"]:
+        bins = dict(found)
+        targets = [(c, bins.get(c)) for c in cfg["slurm_clusters"]]
+    else:
+        targets = found or [(None, None)]
+    # Several OnDemand clusters can point at the same Slurm cluster.
+    out = []
+    for cluster, sacct in targets:
+        t = (cluster, cfg["sacct_path"] or sacct or "sacct")
+        if t[0] not in [o[0] for o in out]:
+            out.append(t)
+    return out
+
+
+def sacct_rows(sacct, cluster, start, end):
+    when = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t))
+    # With -s, sacct returns jobs that were in one of those states during the
+    # window, i.e. jobs that finished in it.
+    cmd = [sacct, "-a", "-X", "-n", "-P", "-s", SACCT_STATES,
+           "-S", when(start), "-E", when(end), "-o", SACCT_FIELDS]
+    if cluster:
+        cmd += ["-M", cluster]
+    env = dict(os.environ, SLURM_TIME_FORMAT="%s")  # Start/End as epoch seconds
+    out = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                         env=env, universal_newlines=True)
+    if out.returncode != 0:
+        raise RuntimeError("%s failed: %s" % (" ".join(cmd), out.stderr.strip()))
+    for line in out.stdout.splitlines():
+        parts = line.split("|")
+        if len(parts) == 7:
+            yield parts
+
+
+def lookback_cutoff(conn, cfg):
+    """Epoch before which uncollected data is ignored, or None for no limit."""
+    if cfg["lookback_days"] is None:
+        return None
+    cutoff = int(time.time()) - int(float(cfg["lookback_days"]) * 86400)
+    row = conn.execute("SELECT value FROM meta WHERE key = 'last_run'").fetchone()
+    if row:
+        # Don't leave a gap after downtime; the extra day covers requests,
+        # like shell websockets, that are logged when they end.
+        cutoff = min(cutoff, int(row[0]) - 86400)
+    return cutoff
+
+
+def collect_slurm(conn, agg, cfg, cluster, sacct, cutoff):
+    """Add time used by finished interactive app jobs on one cluster. Returns jobs counted."""
+    patterns = [re.compile(p) for p in cfg["slurm_job_patterns"]]
+    name = cluster or "local"
+    mark = "slurm_watermark:" + name
+    now = int(time.time())
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (mark,)).fetchone()
+    if row:
+        start = int(row[0]) - SLURM_OVERLAP
+    else:
+        start = cutoff if cutoff is not None else 0
+    total = 0
+    while start < now:
+        end = min(now, start + SLURM_CHUNK)
+        seen = set()
+        for jobid, raw_user, job_name, s, e, cpus, tres in sacct_rows(sacct, cluster, start, end):
+            if not (s.isdigit() and e.isdigit()) or int(e) <= int(s):
+                continue  # never started, e.g. cancelled while pending
+            app = None
+            for rx in patterns:
+                m = rx.match(job_name)
+                if m:
+                    app = m.group(1) if m.groups() else job_name
+                    break
+            jobid = name + ":" + jobid
+            if app is None or jobid in seen:
+                continue
+            seen.add(jobid)
+            if conn.execute("SELECT 1 FROM slurm_jobs WHERE jobid = ?", (jobid,)).fetchone():
+                continue
+            user = agg.norm_user(raw_user)
+            if user is None or user in agg.exclude:
+                continue
+            s, e = int(s), int(e)
+            gm = GPU_TRES_RE.search(tres)
+            ncpu = int(cpus) if cpus.isdigit() else 0
+            ngpu = int(gm.group(1)) if gm else 0
+            agg.add(datetime.date.fromtimestamp(s).isoformat(), user, "job", app)
+            for day, secs in split_by_day(s, e):
+                agg.add(day, user, "walltime", app, secs)
+                if ncpu:
+                    agg.add(day, user, "core_time", app, secs * ncpu)
+                if ngpu:
+                    agg.add(day, user, "gpu_time", app, secs * ngpu)
+            conn.execute("INSERT INTO slurm_jobs (jobid, end) VALUES (?, ?)", (jobid, e))
+            total += 1
+        # Usage rows, job ids, and the watermark commit together.
+        with conn:
+            agg.write(conn)
+            conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (mark, str(end)))
+            conn.execute("DELETE FROM slurm_jobs WHERE jobid LIKE ? AND end < ?",
+                         (name + ":%", end - 30 * 86400))
+        debug("slurm %s %s to %s: %d jobs" % (name, time.strftime("%Y-%m-%d", time.localtime(start)),
+                                            time.strftime("%Y-%m-%d", time.localtime(end)), len(seen)))
+        start = end
+    return total
+
+
+def migrate_local_hours(conn):
+    """Convert early 'hour' rows (server local hour "HH") to 'hour_utc'.
+
+    The log's UTC offset wasn't kept, so this uses this host's time zone,
+    which is the one Apache wrote the log in when both run on the same host.
+    """
+    rows = conn.execute("SELECT day, user, item, count FROM usage WHERE category = 'hour'").fetchall()
+    if not rows:
+        return
+    out = []
+    for day, user, hh, n in rows:
+        y, mo, d = (int(x) for x in day.split("-"))
+        epoch = time.mktime((y, mo, d, int(hh), 0, 0, 0, 0, -1))
+        out.append((day, user, "hour_utc", time.strftime("%Y-%m-%dT%H", time.gmtime(epoch)), n))
+    with conn:
+        conn.executemany(UPSERT_USAGE, out)
+        conn.execute("DELETE FROM usage WHERE category = 'hour'")
+    log("converted %d hourly rows to UTC" % len(out))
+
+
+def fix_permissions(cfg):
+    db = cfg["db_path"]
+    gid = -1
+    if cfg["db_group"]:
+        try:
+            gid = grp.getgrnam(cfg["db_group"]).gr_gid
+        except KeyError:
+            log("warning: db_group %r does not exist" % cfg["db_group"])
+    for path, mode in ((os.path.dirname(db), 0o750), (db, 0o640)):
+        try:
+            if gid != -1:
+                os.chown(path, -1, gid)
+            os.chmod(path, mode)
+        except OSError as exc:
+            log("warning: cannot set permissions on %s: %s" % (path, exc))
+
+
+def main():
+    global VERBOSE
+    ap = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
+    ap.add_argument("-c", "--config", help="config file (default %s)" % DEFAULT_CONFIG)
+    ap.add_argument("-v", "--verbose", action="store_true")
+    args = ap.parse_args()
+    VERBOSE = args.verbose
+
+    cfg = load_config(args.config or DEFAULT_CONFIG, bool(args.config))
+    db_path = cfg["db_path"]
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+
+    lock_fh = open(db_path + ".lock", "w")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        log("another collector run is in progress; exiting")
+        return 0
+
+    if sqlite3.sqlite_version_info < (3, 24, 0):
+        raise SystemExit("ood-usage-collect: SQLite >= 3.24 required, found " + sqlite3.sqlite_version)
+
+    conn = sqlite3.connect(db_path, isolation_level=None)
+    conn.execute("PRAGMA journal_mode = DELETE")  # lets read-only readers open the DB
+    conn.executescript(SCHEMA)
+    conn.execute("INSERT OR REPLACE INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+    conn.isolation_level = ""  # back to implicit transactions for `with conn:`
+    migrate_local_hours(conn)
+
+    cutoff = lookback_cutoff(conn, cfg)
+    if cutoff is not None:
+        debug("looking back to %s" % time.strftime("%Y-%m-%d %H:%M", time.localtime(cutoff)))
+
+    # Discover log files, de-duplicate by content fingerprint, oldest first.
+    found = {}
+    for pattern in cfg["log_globs"]:
+        for path in glob.glob(pattern):
+            if not os.path.isfile(path):
+                continue
+            if cutoff is not None and os.path.getmtime(path) < cutoff:
+                continue  # last written before the lookback window
+            info = inspect_file(path)
+            if not info:
+                continue
+            fp, first_epoch = info
+            # Prefer the uncompressed copy if both exist mid-rotation.
+            if fp not in found or (is_compressed(found[fp][0]) and not is_compressed(path)):
+                found[fp] = (path, first_epoch)
+    files = sorted(((p, fp, e) for fp, (p, e) in found.items()), key=lambda t: t[2])
+    if not files:
+        log("warning: no readable log files matched %s" % cfg["log_globs"])
+
+    last_seen = dict(conn.execute("SELECT user, ts FROM user_last_seen"))
+    agg = Aggregator(cfg, last_seen)
+    agg.cutoff = cutoff
+    total = 0
+    for path, fp, _ in files:
+        n = process_file(conn, agg, path, fp)
+        if n:
+            debug("%s: %d new lines" % (path, n))
+        total += n
+
+    with conn:
+        agg.flush_pending()
+        agg.write(conn)
+
+    # Each cluster keeps its own watermark, so one failing doesn't hold up the rest.
+    jobs = 0
+    targets = slurm_targets(cfg)
+    for cluster, sacct in targets:
+        try:
+            jobs += collect_slurm(conn, agg, cfg, cluster, sacct, cutoff)
+        except (OSError, RuntimeError) as exc:
+            log("warning: skipping Slurm wall time for %s: %s" % (cluster or "local cluster", exc))
+
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO meta VALUES ('last_run', ?)", (str(int(time.time())),))
+    conn.close()
+    fix_permissions(cfg)
+
+    if total or VERBOSE:
+        log("processed %d new lines from %d files (%d unparseable, %d older than lookback skipped)"
+            % (total, len(files), agg.skipped, agg.old))
+    if jobs or (VERBOSE and targets):
+        log("added wall time for %d finished interactive app jobs" % jobs)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

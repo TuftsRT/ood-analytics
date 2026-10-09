@@ -1,0 +1,16 @@
+# Usage database (contains usernames) and the collector's lock file
+*.db
+*.db-journal
+*.db.lock
+
+# Local config; config.example.json is the tracked template
+config.json
+
+# Python and Passenger
+__pycache__/
+*.pyc
+restart.txt
+tmp/
+
+# Original source tarball
+ood-usage-stats.tar.gz

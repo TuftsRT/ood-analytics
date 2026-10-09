@@ -1,0 +1,35 @@
+{
+  "db_path": "/var/lib/ood-usage/usage.db",
+  "db_group": "ood-admins",
+  "log_globs": ["/var/log/httpd/*_access_ssl.log*"],
+  "lookback_days": 14,
+
+  "user_regex": "^([^@]+)@",
+  "lowercase_users": true,
+  "exclude_users": [],
+
+  "session_gap_minutes": 30,
+  "login_attribution_seconds": 300,
+  "login_patterns": [
+    "^GET /oidc\\?(?:[^ ]*&)?code=",
+    "^POST /oidc/?$",
+    "^POST /Shibboleth\\.sso/SAML2/POST",
+    "^GET /dex/callback"
+  ],
+
+  "count_other_passenger_apps": true,
+  "response_time_format": "%D",
+  "slow_request_seconds": 3,
+
+  "walltime": "auto",
+  "ood_clusters_dir": "/etc/ood/config/clusters.d",
+  "sacct_path": null,
+  "slurm_clusters": null,
+  "slurm_job_patterns": [
+    "^OnDemand/(.+)$",
+    "^(?:[^/]+/)?sys/dashboard/(?:sys/)?(.+)$"
+  ],
+
+  "site_name": "Open OnDemand",
+  "show_top_users": true
+}

@@ -1,0 +1,9 @@
+---
+name: Usage Statistics
+category: Admin
+subcategory: Reports
+role: app
+description: |-
+  Logins, sessions, interactive app launches, and tool usage for this
+  Open OnDemand instance, with history that outlives Apache log rotation.
+icon: fa://chart-line

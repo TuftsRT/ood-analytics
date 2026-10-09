@@ -1,0 +1,10 @@
+[Unit]
+Description=Run ood-usage-collect every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+# Catch up after the host was down.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

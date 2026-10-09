@@ -1,0 +1,994 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OnDemand usage</title>
+<style>
+  :root {
+    --paper: #f3f5f4;
+    --surface: #ffffff;
+    --ink: #1b2530;
+    --muted: #5b6876;
+    --rule: #d6dde1;
+    --grid: #e7ecee;
+    --active: #2c6e9b;
+    --sessions: #2f8f6f;
+    --logins: #b9781f;
+    --launches: #74509a;
+    --fail: #b5433a;
+    --walltime: #8a5a3c;
+    --issue-5xx: #2a78d6;
+    --issue-4xx: #eb6834;
+    --issue-slow: #1baf7a;
+    --heat-lo: #9db8ce;
+    --heat-hi: #123a59;
+    --focus: #2c6e9b;
+    color-scheme: light dark;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #151b21;
+      --surface: #1c242c;
+      --ink: #e4eaee;
+      --muted: #96a3ae;
+      --rule: #33404b;
+      --grid: #26313a;
+      --active: #6aa9d6;
+      --sessions: #5cc29d;
+      --logins: #e0a44e;
+      --launches: #ae8bd2;
+      --fail: #e07a70;
+      --walltime: #d39d7a;
+      --issue-5xx: #3987e5;
+      --issue-4xx: #d95926;
+      --issue-slow: #199e70;
+      --heat-lo: #3f5d75;
+      --heat-hi: #bfe2fa;
+      --focus: #6aa9d6;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px 24px 48px; }
+
+  header.top {
+    display: flex; flex-wrap: wrap; gap: 12px 24px;
+    align-items: center; justify-content: space-between;
+    padding-bottom: 16px; border-bottom: 1px solid var(--rule);
+  }
+  header.top h1 { font-size: 1.05rem; font-weight: 600; margin: 0; letter-spacing: 0.01em; }
+  header.top h1 span { color: var(--muted); font-weight: 400; }
+  .views { display: inline-flex; gap: 14px; margin-left: 18px; font-size: 0.9rem; }
+  .views a { color: var(--muted); text-decoration: none; padding-bottom: 2px; border-bottom: 2px solid transparent; }
+  .views a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--ink); }
+  .views a:hover { color: var(--ink); }
+  .notice { background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 12px 14px; font-size: 0.875rem; max-width: 90ch; }
+  .notice p { margin: 0 0 8px; }
+  .notice pre { margin: 0 0 8px; padding: 8px 10px; background: var(--paper); border-radius: 4px; overflow-x: auto; font-size: 0.8rem; }
+
+  .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .seg { display: inline-flex; border: 1px solid var(--rule); border-radius: 6px; overflow: hidden; background: var(--surface); }
+  .seg button {
+    font: inherit; font-size: 0.875rem; color: var(--ink);
+    background: none; border: 0; padding: 5px 11px; cursor: pointer;
+  }
+  .seg button + button { border-left: 1px solid var(--rule); }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+  .controls input, .controls select {
+    font: inherit; font-size: 0.875rem; color: var(--ink);
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 4px 8px;
+  }
+  .controls label { font-size: 0.875rem; color: var(--muted); display: inline-flex; gap: 6px; align-items: center; }
+  :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  .lede {
+    font-size: clamp(1.25rem, 2.4vw, 1.75rem);
+    line-height: 1.35; font-weight: 400;
+    max-width: 46ch; margin: 28px 0 6px;
+  }
+  .lede b { font-weight: 650; }
+  .lede .k-active { color: var(--active); }
+  .lede .k-sessions { color: var(--sessions); }
+  .lede .k-logins { color: var(--logins); }
+  .lede .k-launches { color: var(--launches); }
+  .lede .k-walltime { color: var(--walltime); }
+  .sub { color: var(--muted); margin: 0 0 24px; max-width: 80ch; font-size: 0.9rem; }
+
+  section { margin-top: 28px; }
+  section h2 { font-size: 0.95rem; font-weight: 600; margin: 0 0 4px; }
+  section .note { color: var(--muted); font-size: 0.85rem; margin: 0 0 10px; max-width: 80ch; }
+
+  .chart { position: relative; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 10px 6px 4px; }
+  .chart svg { display: block; width: 100%; overflow: visible; }
+  .chart .axis text { fill: var(--muted); font-size: 11px; }
+  .chart .gridline { stroke: var(--grid); }
+  .chart .hover-line { stroke: var(--muted); stroke-dasharray: 3 3; }
+  .tip {
+    position: absolute; pointer-events: none; z-index: 2;
+    background: var(--ink); color: var(--surface);
+    font-size: 0.8rem; line-height: 1.4; padding: 6px 9px; border-radius: 4px;
+    white-space: nowrap; transform: translateX(-50%);
+  }
+  .tip .sw { display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 6px; }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 4px 14px; margin: 0 0 8px; padding: 0; list-style: none; }
+  .legend button {
+    font: inherit; font-size: 0.85rem; color: var(--ink); background: none; border: 0;
+    padding: 2px 0; cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  }
+  .legend button[aria-pressed="false"] { color: var(--muted); text-decoration: line-through; }
+  .legend .sw { width: 14px; height: 3px; border-radius: 2px; }
+
+  .heat .cell:hover { stroke: var(--ink); stroke-width: 1.5; }
+  .heat-scale { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 0.8rem; color: var(--muted); }
+  .heat-scale .ramp { width: 140px; height: 8px; border-radius: 2px; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
+  @media (max-width: 860px) { .cols { grid-template-columns: 1fr; } }
+
+  .tablewrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+  th, td { padding: 7px 12px; text-align: right; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+  th:first-child, td:first-child { text-align: left; white-space: normal; word-break: break-word; }
+  thead th { font-weight: 600; color: var(--muted); font-size: 0.8rem; background: var(--surface); position: sticky; top: 0; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td .bar { display: block; height: 3px; margin: 4px 0 0 auto; max-width: 160px; border-radius: 2px; background: var(--launches); opacity: 0.85; }
+  td.fail { color: var(--fail); }
+  td.zero { color: var(--muted); }
+  .empty { padding: 18px 12px; color: var(--muted); font-size: 0.875rem; }
+
+  .error {
+    margin-top: 28px; padding: 14px 16px; border-left: 3px solid var(--fail);
+    background: var(--surface); max-width: 80ch;
+  }
+  .error h2 { margin: 0 0 4px; font-size: 1rem; }
+  .error p { margin: 0; color: var(--muted); }
+
+  footer { margin-top: 36px; padding-top: 12px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.8rem; display: flex; flex-wrap: wrap; gap: 6px 24px; }
+  footer a { color: inherit; }
+  .loading { opacity: 0.55; transition: opacity 120ms; }
+  @media (prefers-reduced-motion: reduce) { .loading { transition: none; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div>
+      <h1 id="title" style="display:inline">OnDemand usage</h1>
+      <nav class="views" aria-label="Reports">
+        <a id="nav-usage" href="./">Usage</a>
+        <a id="nav-issues" href="issues">Issues</a>
+      </nav>
+    </div>
+    <div class="controls" role="group" aria-label="Report range">
+      <div class="seg" id="presets">
+        <button type="button" data-preset="30">30 days</button>
+        <button type="button" data-preset="90">90 days</button>
+        <button type="button" data-preset="365">12 months</button>
+        <button type="button" data-preset="all">All time</button>
+      </div>
+      <label>Year
+        <select id="year"><option value="">—</option></select>
+      </label>
+      <label>From <input type="date" id="start"></label>
+      <label>To <input type="date" id="end"></label>
+      <label>By
+        <select id="group">
+          <option value="day">day</option>
+          <option value="week">week</option>
+          <option value="month">month</option>
+          <option value="year">year</option>
+        </select>
+      </label>
+    </div>
+  </header>
+
+  <div id="error" class="error" role="alert" hidden>
+    <h2>Usage data is unavailable</h2>
+    <p id="error-msg"></p>
+    <p class="note">Config file: <code>__CONFIG_PATH__</code> __CONFIG_STATUS__<br>
+       Database: <code>__DB_PATH__</code></p>
+  </div>
+
+  <main id="main">
+    <p class="lede" id="lede">Loading usage…</p>
+    <p class="sub" id="sub"></p>
+
+    <section>
+      <h2>People and sessions</h2>
+      <p class="note">Active users are distinct people with any authenticated request in the period. A session starts after 30 minutes or more of inactivity (configurable). Logins are completed sign-ins at the identity provider.</p>
+      <ul class="legend" id="legend-people"></ul>
+      <div class="chart" id="chart-people"></div>
+    </section>
+
+    <section>
+      <h2>When people use OnDemand</h2>
+      <p class="note" id="heat-note"></p>
+      <div class="heat-scale" id="heat-scale"></div>
+      <div class="chart heat" id="chart-heat"></div>
+    </section>
+
+    <section>
+      <h2>Interactive app launches</h2>
+      <ul class="legend" id="legend-launches"></ul>
+      <div class="chart" id="chart-launches"></div>
+    </section>
+
+    <section class="walltime-only">
+      <h2>Interactive app wall time</h2>
+      <p class="note">Hours that interactive app jobs ran, from Slurm accounting. Jobs are counted once they finish, and a job that runs past midnight is split across the days it ran.</p>
+      <ul class="legend" id="legend-walltime"></ul>
+      <div class="chart" id="chart-walltime"></div>
+    </section>
+
+    <div class="cols">
+      <section>
+        <h2>Interactive apps</h2>
+        <p class="note">Successful submissions. Failed counts the form re-rendering with an error or the scheduler rejecting the job.</p>
+        <div class="tablewrap" id="tbl-launches"></div>
+      </section>
+      <section>
+        <h2>OnDemand tools</h2>
+        <p class="note">User-days counts each person once per day they used the tool.</p>
+        <div class="tablewrap" id="tbl-apps"></div>
+      </section>
+    </div>
+
+    <section class="walltime-only">
+      <h2>Wall time by app</h2>
+      <p class="note">App names come from the Slurm job name, so they can differ from the launch names above. Core hours are wall hours times allocated CPUs; GPU hours likewise for allocated GPUs.</p>
+      <div class="tablewrap" id="tbl-walltime"></div>
+    </section>
+
+    <section id="users-section">
+      <h2>Most active users</h2>
+      <p class="note">Top 25 by days active in the selected range.</p>
+      <div class="tablewrap" id="tbl-users"></div>
+    </section>
+  </main>
+
+  <main id="issues-main" hidden>
+    <p class="lede" id="issues-lede">Loading…</p>
+    <p class="sub" id="issues-sub"></p>
+
+    <section>
+      <h2>Errors and slow requests</h2>
+      <p class="note">Server errors are HTTP 5xx responses; client errors are 4xx. Slow requests took longer than the threshold to answer. Requests that couldn't be tied to a signed-in user still count.</p>
+      <ul class="legend" id="legend-issues"></ul>
+      <div class="chart" id="chart-issues"></div>
+    </section>
+
+    <section>
+      <h2>Response times by area</h2>
+      <div id="latency-body">
+        <p class="note">Static files, websockets, and traffic to running interactive apps aren't timed. Percentiles are to the nearest histogram bucket.</p>
+        <div class="tablewrap" id="tbl-latency"></div>
+      </div>
+      <div class="notice" id="timing-help" hidden>
+        <p>Apache isn't logging response times yet, so slow page loads can't be measured. Add <code>%D</code> (microseconds) to the end of the access log format in <code>/etc/ood/config/ood_portal.yml</code>:</p>
+        <pre>logformat: '"%h %l %u %t \"%r\" %&gt;s %b \"%{Referer}i\" \"%{User-Agent}i\" %D"'</pre>
+        <p>Then run <code>/opt/ood/ood-portal-generator/sbin/update_ood_portal</code> and restart Apache. The collector picks the times up from the next log lines on; error counts below work either way.</p>
+      </div>
+    </section>
+
+    <div class="cols">
+      <section>
+        <h2>Server errors (5xx)</h2>
+        <p class="note">A 502 or 503 under an OnDemand app usually means that person's web server crashed or was restarting; under Interactive App Connections it usually means the app's session had ended. 504 is a timeout.</p>
+        <div class="tablewrap" id="tbl-5xx"></div>
+      </section>
+      <section>
+        <h2>Client errors (4xx)</h2>
+        <p class="note">404s are often stale bookmarks or missing files; a run of 401 or 403 can point to sign-in or permission problems.</p>
+        <div class="tablewrap" id="tbl-4xx"></div>
+      </section>
+    </div>
+
+    <section id="issues-users-section">
+      <h2>People most affected</h2>
+      <p class="note">Top 25 by server errors and failed web server starts, then slow requests.</p>
+      <div class="tablewrap" id="tbl-issue-users"></div>
+    </section>
+  </main>
+
+  <footer id="footer"></footer>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var nf = new Intl.NumberFormat();
+  var fmt = function (n) { return nf.format(n || 0); };
+  var hf1 = new Intl.NumberFormat(undefined, { maximumFractionDigits: 1 });
+  var fmtH = function (n) { return n >= 100 ? nf.format(Math.round(n)) : hf1.format(n || 0); };
+  var $ = function (id) { return document.getElementById(id); };
+  var css = function (name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); };
+  var SVGNS = "http://www.w3.org/2000/svg";
+
+  var state = { start: null, end: null, group: "week", preset: "90" };
+  var lastData = null;
+  var hidden = {};
+
+  function iso(d) {
+    var m = d.getMonth() + 1, day = d.getDate();
+    return d.getFullYear() + "-" + (m < 10 ? "0" : "") + m + "-" + (day < 10 ? "0" : "") + day;
+  }
+  function daysAgo(n) { var d = new Date(); d.setDate(d.getDate() - n); return iso(d); }
+  function parseISO(s) { var p = s.split("-"); return new Date(+p[0], +p[1] - 1, +(p[2] || 1)); }
+
+  function el(tag, attrs, text) {
+    var node = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    if (text != null) node.textContent = text;
+    return node;
+  }
+  function svg(tag, attrs) {
+    var node = document.createElementNS(SVGNS, tag);
+    Object.keys(attrs || {}).forEach(function (k) { node.setAttribute(k, attrs[k]); });
+    return node;
+  }
+
+  // ---------- URL state ----------
+  function readHash() {
+    var h = new URLSearchParams(location.hash.slice(1));
+    if (h.get("preset")) state.preset = h.get("preset");
+    if (h.get("start")) state.start = h.get("start");
+    if (h.get("end")) state.end = h.get("end");
+    if (h.get("group")) state.group = h.get("group");
+    if (h.get("start") && h.get("end") && !h.get("preset")) state.preset = "custom";
+  }
+  function writeHash() {
+    var h = new URLSearchParams();
+    if (state.preset && state.preset !== "custom") {
+      h.set("preset", state.preset);
+    } else {
+      h.set("start", state.start); h.set("end", state.end);
+    }
+    h.set("group", state.group);
+    history.replaceState(null, "", "#" + h.toString());
+    // Keep the range when switching reports.
+    $("nav-usage").href = BASE + "/#" + h.toString();
+    $("nav-issues").href = BASE + "/issues#" + h.toString();
+  }
+
+  function applyPreset(p, firstDay) {
+    state.preset = p;
+    state.end = iso(new Date());
+    if (/^y\d{4}$/.test(p)) {
+      // Calendar year; the current year stops at today.
+      var year = p.slice(1);
+      state.start = year + "-01-01";
+      if (year + "-12-31" < state.end) state.end = year + "-12-31";
+      state.group = "month";
+    } else if (p === "all") {
+      state.start = firstDay || daysAgo(365);
+      state.group = "month";
+    } else {
+      var n = parseInt(p, 10);
+      state.start = daysAgo(n - 1);
+      state.group = n <= 31 ? "day" : n <= 120 ? "week" : "month";
+    }
+  }
+
+  function populateYears(firstDay) {
+    var sel = $("year"), now = new Date().getFullYear();
+    var first = firstDay ? parseISO(firstDay).getFullYear() : now;
+    var picked = /^y\d{4}$/.test(state.preset) ? +state.preset.slice(1) : now;
+    first = Math.min(first, picked);
+    sel.length = 1;  // keep the blank option
+    for (var y = now; y >= first; y--) sel.appendChild(el("option", { value: String(y) }, String(y)));
+  }
+
+  function syncControls() {
+    $("start").value = state.start; $("end").value = state.end; $("group").value = state.group;
+    $("year").value = /^y\d{4}$/.test(state.preset) ? state.preset.slice(1) : "";
+    Array.prototype.forEach.call($("presets").querySelectorAll("button"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.preset === state.preset));
+    });
+  }
+
+  // ---------- data ----------
+  // Absolute so the API resolves even when the page URL has no trailing slash.
+  // The same page serves both reports; /issues selects the issues view.
+  var VIEW = /\/issues\/?$/.test(location.pathname) ? "issues" : "usage";
+  var BASE = location.pathname.replace(/\/(index\.html|issues\/?)?$/, "");
+  var API = BASE + "/api/";
+  var MAIN = VIEW === "issues" ? "issues-main" : "main";
+
+  function query() {
+    return "start=" + encodeURIComponent(state.start) + "&end=" + encodeURIComponent(state.end) +
+           "&group=" + encodeURIComponent(state.group);
+  }
+
+  function load() {
+    syncControls(); writeHash();
+    $(MAIN).classList.add("loading");
+    fetch(API + (VIEW === "issues" ? "issues?" : "summary?") + query(), { credentials: "same-origin" })
+      .then(function (r) {
+        return r.text().then(function (text) {
+          var body = null;
+          try { body = JSON.parse(text); } catch (e) { /* proxy error pages are HTML */ }
+          if (!r.ok || !body) {
+            throw new Error((body && body.error) ||
+                            ("Request failed with status " + r.status + " " + r.statusText));
+          }
+          return body;
+        });
+      })
+      .then(function (data) {
+        lastData = data;
+        if (state.preset === "all" && data.data.first_day && data.data.first_day !== state.start) {
+          state.start = data.data.first_day;
+          return load();
+        }
+        renderView(data);
+      })
+      .catch(showError)
+      .then(function () { $(MAIN).classList.remove("loading"); });
+  }
+
+  function showError(err) {
+    $("error-msg").textContent = err.message;
+    $("error").hidden = false;
+    $(MAIN).hidden = true;
+  }
+
+  function renderView(d) { if (VIEW === "issues") renderIssues(d); else render(d); }
+  function redraw() { if (VIEW === "issues") drawIssueCharts(); else drawCharts(); }
+
+  function setTitle(siteName, word) {
+    document.title = (siteName || "OnDemand") + " " + word;
+    $("title").textContent = "";
+    $("title").appendChild(document.createTextNode((siteName || "OnDemand") + " "));
+    $("title").appendChild(el("span", null, word));
+  }
+
+  function renderFooter(d, links) {
+    var f = $("footer");
+    f.textContent = "";
+    if (d.data.first_day) f.appendChild(el("span", null, "History from " + parseISO(d.data.first_day).toLocaleDateString(undefined, { dateStyle: "medium" }) +
+      " to " + parseISO(d.data.last_day).toLocaleDateString(undefined, { dateStyle: "medium" })));
+    if (d.data.server_timezone) {
+      f.appendChild(el("span", null, "Dates use the server's time zone, " + zoneText(d.data.server_timezone.name, d.data.server_timezone.abbr)));
+    }
+    if (d.data.last_collected) f.appendChild(el("span", null, "Collected " + new Date(d.data.last_collected * 1000).toLocaleString()));
+    (links || []).forEach(function (l) { f.appendChild(el("a", { href: l[0] }, l[1])); });
+  }
+
+  // ---------- issues view ----------
+  var STATUS_TEXT = { 400: "Bad Request", 401: "Unauthorized", 403: "Forbidden", 404: "Not Found",
+    405: "Method Not Allowed", 408: "Request Timeout", 413: "Payload Too Large", 414: "URI Too Long",
+    422: "Unprocessable", 429: "Too Many Requests", 500: "Internal Server Error", 501: "Not Implemented",
+    502: "Bad Gateway", 503: "Service Unavailable", 504: "Gateway Timeout" };
+  function statusText(code) { return code + (STATUS_TEXT[code] ? " " + STATUS_TEXT[code] : ""); }
+  function pct(v) { return v == null ? "—" : (v < 0.1 && v > 0 ? "<0.1" : hf1.format(v)) + "%"; }
+  function secs(n) { return hf1.format(n) + " s"; }
+
+  var issueSeries;
+  function drawIssueCharts() {
+    if (!lastData) return;
+    renderLegend("legend-issues", issueSeries, drawIssueCharts);
+    drawChart($("chart-issues"), lastData.series, lastData.range.group, issueSeries, "line", 240);
+  }
+
+  function renderIssues(d) {
+    $("error").hidden = true;
+    $(MAIN).hidden = false;
+    setTitle(d.site_name, "issues");
+    populateYears(d.data.first_day);
+    syncControls();
+    var t = d.totals, timed = d.data.has_timing, edges = d.latency_edges;
+    function bucketText(i) {
+      if (i == null) return "—";
+      return i < edges.length ? "≤ " + secs(edges[i]) : "> " + secs(edges[edges.length - 1]);
+    }
+
+    var lede = $("issues-lede");
+    lede.textContent = "";
+    var parts = [["From " + rangeText(d) + ", OnDemand answered ", null], [fmt(t.requests), null],
+                 [t.requests === 1 ? " request. " : " requests. ", null],
+                 [fmt(t.err5xx), "k-5xx"], [t.err5xx === 1 ? " was a server error" : " were server errors", null]];
+    if (t.requests) parts.push([" (" + pct(100 * t.err5xx / t.requests) + ")", null]);
+    if (t.err5xx_users) parts.push([", affecting " + fmt(t.err5xx_users) + (t.err5xx_users === 1 ? " person" : " people"), null]);
+    if (timed) {
+      parts.push(["; ", null], [fmt(t.slow), "k-slow"], [" took longer than " + secs(d.slow_seconds) + ".", null]);
+    } else {
+      parts.push([".", null]);
+    }
+    parts.forEach(function (p) {
+      if (p[1]) { var b = el("b", null, p[0]); b.style.color = css(p[1] === "k-5xx" ? "--issue-5xx" : "--issue-slow"); lede.appendChild(b); }
+      else lede.appendChild(document.createTextNode(p[0]));
+    });
+
+    var notes = [];
+    if (t.err4xx) notes.push(fmt(t.err4xx) + " client errors (4xx)");
+    if (t.pun_starts) notes.push(fmt(t.pun_starts) + (t.pun_starts === 1 ? " personal web server start, " : " personal web server starts, ") +
+                                 fmt(t.pun_start_fails) + (t.pun_starts === 1 ? " that failed" : " of which failed") +
+                                 (t.pun_fail_users ? " for " + fmt(t.pun_fail_users) + (t.pun_fail_users === 1 ? " person" : " people") : ""));
+    if (timed && t.slow_users) notes.push(fmt(t.slow_users) + (t.slow_users === 1 ? " person" : " people") + " had a slow request");
+    var sub = notes.length ? notes.join("; ") + "." : "";
+    if (d.data.issues_first_day && d.data.issues_first_day > d.range.start) {
+      sub += (sub ? " " : "") + "Error tracking starts " + parseISO(d.data.issues_first_day).toLocaleDateString(undefined, { dateStyle: "medium" }) + ".";
+    }
+    $("issues-sub").textContent = sub;
+
+    issueSeries = [
+      { key: "err5xx", name: "Server errors", color: css("--issue-5xx") },
+      { key: "err4xx", name: "Client errors", color: css("--issue-4xx") }
+    ];
+    if (timed) issueSeries.push({ key: "slow", name: "Slow requests", color: css("--issue-slow") });
+    drawIssueCharts();
+
+    $("latency-body").hidden = !timed;
+    $("timing-help").hidden = timed;
+    if (timed) {
+      renderTable("tbl-latency", [
+        { key: "area", label: "Area" },
+        { key: "timed", label: "Timed requests" },
+        { key: "p50", label: "Median", text: bucketText },
+        { key: "p95", label: "95th percentile", text: bucketText },
+        { key: "slow", label: "Slow", bar: true, barColor: css("--issue-slow") },
+        { key: "slow_share", label: "% slow", text: pct, cls: function (v) { return v ? "" : "zero"; } }
+      ], d.latency, "No timed requests in this range.");
+    }
+
+    var errCols = function (color) {
+      return [
+        { key: "status", label: "Error", text: statusText },
+        { key: "area", label: "Area" },
+        { key: "count", label: "Requests", bar: true, barColor: color },
+        { key: "users", label: "People" },
+        { key: "share", label: "% of area", text: pct }
+      ];
+    };
+    renderTable("tbl-5xx", errCols(css("--issue-5xx")), d.errors_5xx, "No server errors in this range.");
+    renderTable("tbl-4xx", errCols(css("--issue-4xx")), d.errors_4xx, "No client errors in this range.");
+
+    $("issues-users-section").hidden = !d.show_top_users;
+    if (d.show_top_users) {
+      renderTable("tbl-issue-users", [
+        { key: "user", label: "User" },
+        { key: "err5xx", label: "Server errors", bar: true, barColor: css("--issue-5xx") },
+        { key: "pun_start_fails", label: "Failed server starts", cls: function (v) { return v ? "fail" : "zero"; } },
+        { key: "slow", label: "Slow requests" },
+        { key: "err4xx", label: "Client errors" }
+      ].filter(function (c) { return timed || c.key !== "slow"; }), d.users, "Nobody hit errors in this range.");
+    }
+
+    renderFooter(d);
+  }
+
+  // ---------- rendering ----------
+  function periodLabel(key, group, short) {
+    var d = parseISO(key);
+    if (group === "year") return key;
+    if (group === "month") return d.toLocaleDateString(undefined, { month: "short", year: short ? "2-digit" : "numeric" });
+    var s = d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    if (group === "week") return short ? s : "Week of " + s + ", " + d.getFullYear();
+    return short ? s : d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric", year: "numeric" });
+  }
+
+  function rangeText(data) {
+    var s = parseISO(data.range.start), e = parseISO(data.range.end);
+    var o = { month: "short", day: "numeric", year: "numeric" };
+    return s.toLocaleDateString(undefined, o) + " to " + e.toLocaleDateString(undefined, o);
+  }
+
+  function renderLede(data) {
+    var t = data.totals, lede = $("lede");
+    lede.textContent = "";
+    var parts = [
+      ["From " + rangeText(data) + ", ", null],
+      [fmt(t.active_users), "k-active"], [t.active_users === 1 ? " person started " : " people started ", null],
+      [fmt(t.sessions), "k-sessions"], [t.sessions === 1 ? " session, signed in " : " sessions, signed in ", null],
+      [fmt(t.logins), "k-logins"], [" times, and launched ", null],
+      [fmt(t.launches), "k-launches"], [t.launches === 1 ? " interactive app" : " interactive apps", null]
+    ];
+    if (data.data.has_walltime && t.wall_hours) {
+      parts.push([", which ran for ", null], [fmtH(t.wall_hours), "k-walltime"],
+                 [t.wall_hours === 1 ? " hour." : " hours.", null]);
+    } else {
+      parts.push([".", null]);
+    }
+    parts.forEach(function (p) {
+      if (p[1]) { var b = el("b", { class: p[1] }, p[0]); lede.appendChild(b); }
+      else lede.appendChild(document.createTextNode(p[0]));
+    });
+    var notes = [];
+    if (t.launch_users) notes.push(fmt(t.launch_users) + (t.launch_users === 1 ? " person" : " people") + " launched apps");
+    if (t.failed_launches) notes.push(fmt(t.failed_launches) + " launch attempts failed");
+    if (data.data.has_walltime && t.jobs) {
+      var hw = fmt(t.jobs) + " finished app jobs used " + fmtH(t.core_hours) + " core hours";
+      if (t.gpu_hours) hw += " and " + fmtH(t.gpu_hours) + " GPU hours";
+      notes.push(hw);
+    }
+    if (t.unattributed_logins) notes.push(fmt(t.unattributed_logins) + " sign-ins couldn't be matched to a user");
+    $("sub").textContent = notes.length ? notes.join("; ") + "." : "";
+  }
+
+  function niceMax(v) {
+    if (v <= 4) return 4;
+    var p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+    var step = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+    return step * p;
+  }
+
+  function renderLegend(listId, series, redraw) {
+    var ul = $(listId);
+    ul.textContent = "";
+    series.forEach(function (s) {
+      var li = el("li");
+      var b = el("button", { type: "button", "aria-pressed": String(!hidden[s.key]) });
+      var sw = el("span", { class: "sw" }); sw.style.background = s.color;
+      b.appendChild(sw); b.appendChild(document.createTextNode(s.name));
+      b.addEventListener("click", function () { hidden[s.key] = !hidden[s.key]; redraw(); });
+      li.appendChild(b); ul.appendChild(li);
+    });
+  }
+
+  function drawChart(container, rows, group, series, kind, height) {
+    container.textContent = "";
+    var visible = series.filter(function (s) { return !hidden[s.key]; });
+    var W = Math.max(320, container.clientWidth - 12), H = height;
+    var m = { t: 8, r: 12, b: 26, l: 44 };
+    var iw = W - m.l - m.r, ih = H - m.t - m.b, n = rows.length;
+    var max = 0;
+    visible.forEach(function (s) { rows.forEach(function (r) { max = Math.max(max, r[s.key] || 0); }); });
+    max = niceMax(max);
+    var x = function (i) { return m.l + (n <= 1 ? iw / 2 : (kind === "bar" ? (i + 0.5) * iw / n : i * iw / (n - 1))); };
+    var y = function (v) { return m.t + ih - (v / max) * ih; };
+
+    var root = svg("svg", { viewBox: "0 0 " + W + " " + H, height: H, role: "img",
+      "aria-label": series.map(function (s) { return s.name; }).join(", ") + " by " + group });
+    var axis = svg("g", { class: "axis" });
+    for (var g = 0; g <= 4; g++) {
+      var v = max * g / 4, yy = y(v);
+      root.appendChild(svg("line", { class: "gridline", x1: m.l, x2: W - m.r, y1: yy, y2: yy }));
+      var tl = svg("text", { x: m.l - 8, y: yy + 4, "text-anchor": "end" }); tl.textContent = fmt(v);
+      axis.appendChild(tl);
+    }
+    var every = Math.max(1, Math.ceil(n / Math.max(2, Math.floor(iw / 70))));
+    rows.forEach(function (r, i) {
+      if (i % every !== 0) return;
+      var t = svg("text", { x: x(i), y: H - 6, "text-anchor": "middle" });
+      t.textContent = periodLabel(r.period, group, true);
+      axis.appendChild(t);
+    });
+    root.appendChild(axis);
+
+    if (kind === "bar") {
+      var bw = Math.max(1, Math.min(28, iw / n * 0.7));
+      visible.forEach(function (s) {
+        rows.forEach(function (r, i) {
+          var v = r[s.key] || 0; if (!v) return;
+          root.appendChild(svg("rect", { x: x(i) - bw / 2, y: y(v), width: bw, height: m.t + ih - y(v), fill: s.color, rx: 1 }));
+        });
+      });
+    } else {
+      visible.forEach(function (s) {
+        var d = rows.map(function (r, i) { return (i ? "L" : "M") + x(i).toFixed(1) + "," + y(r[s.key] || 0).toFixed(1); }).join("");
+        root.appendChild(svg("path", { d: d, fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+        if (n <= 45) rows.forEach(function (r, i) {
+          root.appendChild(svg("circle", { cx: x(i), cy: y(r[s.key] || 0), r: 2.5, fill: s.color }));
+        });
+      });
+    }
+
+    var hoverLine = svg("line", { class: "hover-line", y1: m.t, y2: m.t + ih, visibility: "hidden" });
+    root.appendChild(hoverLine);
+    var hit = svg("rect", { x: m.l, y: m.t, width: iw, height: ih, fill: "transparent" });
+    root.appendChild(hit);
+    container.appendChild(root);
+
+    var tip = el("div", { class: "tip", hidden: "" });
+    container.appendChild(tip);
+    function show(evt) {
+      var rect = root.getBoundingClientRect(), scale = W / rect.width;
+      var px = (evt.clientX - rect.left) * scale;
+      var i = kind === "bar" ? Math.floor((px - m.l) / (iw / n)) : Math.round((px - m.l) / (iw / Math.max(1, n - 1)));
+      i = Math.max(0, Math.min(n - 1, i));
+      var r = rows[i];
+      hoverLine.setAttribute("x1", x(i)); hoverLine.setAttribute("x2", x(i)); hoverLine.setAttribute("visibility", "visible");
+      tip.textContent = "";
+      tip.appendChild(el("div", null, periodLabel(r.period, group, false)));
+      visible.forEach(function (s) {
+        var line = el("div"); var sw = el("span", { class: "sw" }); sw.style.background = s.color;
+        line.appendChild(sw); line.appendChild(document.createTextNode(s.name + ": " + fmt(r[s.key])));
+        tip.appendChild(line);
+      });
+      tip.hidden = false;
+      tip.style.left = Math.min(Math.max(x(i) / scale + 6, 80), rect.width - 80) + "px";
+      tip.style.top = (m.t / scale + 14) + "px";
+    }
+    hit.addEventListener("mousemove", show);
+    hit.addEventListener("mouseleave", function () { tip.hidden = true; hoverLine.setAttribute("visibility", "hidden"); });
+  }
+
+  // ---------- heatmap ----------
+  var DOW = [0, 1, 2, 3, 4, 5, 6].map(function (i) {  // Sunday first, locale names
+    return new Date(2024, 0, 7 + i).toLocaleDateString(undefined, { weekday: "short" });
+  });
+  var DOW_LONG = [0, 1, 2, 3, 4, 5, 6].map(function (i) {
+    return new Date(2024, 0, 7 + i).toLocaleDateString(undefined, { weekday: "long" });
+  });
+  function hourLabel(h) { return new Date(2024, 0, 1, h).toLocaleTimeString(undefined, { hour: "numeric" }); }
+
+  function hexRGB(h) { h = h.replace("#", ""); return [0, 2, 4].map(function (i) { return parseInt(h.substr(i, 2), 16); }); }
+  function mix(a, b, t) {
+    var x = hexRGB(a), y = hexRGB(b);
+    return "rgb(" + x.map(function (v, i) { return Math.round(v + (y[i] - v) * t); }).join(",") + ")";
+  }
+
+  // The viewer's time zone, e.g. "America/New_York (EDT)".
+  function zoneAbbr(tz) {
+    try {
+      var parts = new Intl.DateTimeFormat(undefined, { timeZone: tz || undefined, timeZoneName: "short" }).formatToParts(new Date());
+      var p = parts.filter(function (x) { return x.type === "timeZoneName"; })[0];
+      return p ? p.value : "";
+    } catch (e) { return ""; }
+  }
+  var VIEW_TZ = (Intl.DateTimeFormat().resolvedOptions().timeZone) || "";
+  function zoneText(name, abbr) { return abbr && abbr !== name ? name + " (" + abbr + ")" : name; }
+
+  // Bin UTC hours by the viewer's local day of week and hour. Each cell's
+  // average is over how many times that local hour occurs in the span, so
+  // daylight-saving changes are handled by the browser's own calendar.
+  function binHeatmap(hm) {
+    var cells = [], days = [];
+    for (var d = 0; d < 7; d++) { cells.push(new Array(24).fill(0)); days.push(new Array(24).fill(0)); }
+    if (hm.span) {
+      for (var t = hm.span[0]; t <= hm.span[1]; t += 3600) {
+        var dt = new Date(t * 1000); days[dt.getDay()][dt.getHours()]++;
+      }
+      hm.hours.forEach(function (row) {
+        var dt = new Date(row[0] * 1000); cells[dt.getDay()][dt.getHours()] += row[1];
+      });
+      cells.forEach(function (r, d) { r.forEach(function (v, h) { r[h] = days[d][h] ? Math.round(10 * v / days[d][h]) / 10 : 0; }); });
+    }
+    return { cells: cells, days: days };
+  }
+
+  function heatSummary(hm) {
+    var best = null;
+    hm.cells.forEach(function (row, d) { row.forEach(function (v, h) { if (!best || v > best.v) best = { d: d, h: h, v: v }; }); });
+    return best && best.v ? best : null;
+  }
+
+  function renderHeatNote(d) {
+    var hm = d.heatmap, server = d.data.server_timezone || {};
+    var note = "Average number of people active in each hour, shown in your time zone, " + zoneText(VIEW_TZ, zoneAbbr()) + ".";
+    if (server.name && server.name !== VIEW_TZ) note += " The server is in " + zoneText(server.name, server.abbr) + ".";
+    var best = heatSummary(d.heat);
+    if (best) note += " Busiest: " + DOW_LONG[best.d] + " " + hourLabel(best.h) + " to " + hourLabel((best.h + 1) % 24) +
+                      ", with " + fmtH(best.v) + " on average.";
+    if (hm.first_day && hm.first_day > d.range.start) {
+      note += " Hourly data starts " + parseISO(hm.first_day).toLocaleDateString(undefined, { dateStyle: "medium" }) + ".";
+    }
+    $("heat-note").textContent = note;
+  }
+
+  function drawHeatmap(container, hm) {
+    container.textContent = "";
+    var lo = css("--heat-lo"), hi = css("--heat-hi"), empty = css("--grid");
+    var max = 0;
+    hm.cells.forEach(function (row) { row.forEach(function (v) { max = Math.max(max, v); }); });
+
+    var scale = $("heat-scale");
+    scale.textContent = "";
+    if (!max) {
+      container.appendChild(el("div", { class: "empty" }, "No hourly activity in this range."));
+      return;
+    }
+    var ramp = el("span", { class: "ramp" });
+    ramp.style.background = "linear-gradient(to right, " + lo + ", " + hi + ")";
+    scale.appendChild(el("span", null, "0"));
+    scale.appendChild(ramp);
+    scale.appendChild(el("span", null, fmtH(max) + " people"));
+
+    var W = Math.max(320, container.clientWidth - 12);
+    // Days across the bottom, hours down the side with midnight at the top.
+    var m = { t: 4, r: 4, b: 22, l: 52 }, gap = 2;
+    var cw = (W - m.l - m.r) / 7, ch = 16, H = m.t + 24 * ch + m.b;
+    var root = svg("svg", { viewBox: "0 0 " + W + " " + H, height: H, role: "img",
+      "aria-label": "Average active people by day of week and hour of day" });
+    var axis = svg("g", { class: "axis" });
+    DOW.forEach(function (name, d) {
+      var t = svg("text", { x: m.l + d * cw + cw / 2, y: H - 6, "text-anchor": "middle" });
+      t.textContent = name; axis.appendChild(t);
+    });
+    for (var h = 0; h < 24; h += 3) {
+      var t = svg("text", { x: m.l - 8, y: m.t + h * ch + ch / 2 + 4, "text-anchor": "end" });
+      t.textContent = hourLabel(h); axis.appendChild(t);
+    }
+    root.appendChild(axis);
+
+    var tip = el("div", { class: "tip", hidden: "" });
+    hm.cells.forEach(function (row, d) {
+      row.forEach(function (v, h) {
+        // sqrt keeps quiet hours distinguishable when the peak is much higher
+        var x = m.l + d * cw, y = m.t + h * ch;
+        var cell = svg("rect", { class: "cell", x: x + gap / 2, y: y + gap / 2, width: Math.max(1, cw - gap),
+                                 height: ch - gap, rx: 2, fill: v ? mix(lo, hi, Math.sqrt(v / max)) : "none" });
+        // Empty hours are outlined rather than filled so they read apart from low ones.
+        if (!v) { cell.setAttribute("stroke", empty); cell.setAttribute("pointer-events", "all"); }
+        cell.addEventListener("pointerenter", function () {
+          tip.textContent = "";
+          tip.appendChild(el("strong", null, fmtH(v) + (v === 1 ? " person" : " people")));
+          tip.appendChild(el("div", null, DOW_LONG[d] + ", " + hourLabel(h) + " to " + hourLabel((h + 1) % 24)));
+          tip.appendChild(el("div", null, "average over " + hm.days[d][h] + " " + DOW_LONG[d] + (hm.days[d][h] === 1 ? "" : "s")));
+          var scaleX = root.getBoundingClientRect().width / W;
+          tip.hidden = false;
+          tip.style.left = Math.min(Math.max((x + cw / 2) * scaleX, 90), root.getBoundingClientRect().width - 90) + "px";
+          tip.style.top = ((y + ch) * scaleX + 14) + "px";
+        });
+        cell.addEventListener("pointerleave", function () { tip.hidden = true; });
+        root.appendChild(cell);
+      });
+    });
+    container.appendChild(root);
+    container.appendChild(tip);
+  }
+
+  function renderTable(id, columns, rows, emptyText) {
+    var wrap = $(id);
+    wrap.textContent = "";
+    if (!rows.length) { wrap.appendChild(el("div", { class: "empty" }, emptyText)); return; }
+    var table = el("table"), thead = el("thead"), tr = el("tr");
+    columns.forEach(function (c) { tr.appendChild(el("th", { scope: "col" }, c.label)); });
+    thead.appendChild(tr); table.appendChild(thead);
+    var tbody = el("tbody");
+    var barMax = 0;
+    columns.forEach(function (c) { if (c.bar) rows.forEach(function (r) { barMax = Math.max(barMax, r[c.key] || 0); }); });
+    rows.forEach(function (r) {
+      var row = el("tr");
+      columns.forEach(function (c, ci) {
+        var v = r[c.key];
+        var td = el(ci === 0 ? "th" : "td", ci === 0 ? { scope: "row" } : null, c.text ? c.text(v) : (typeof v === "number" ? fmt(v) : v));
+        if (ci === 0) td.style.fontWeight = "400";
+        if (c.cls) { var k = c.cls(v); if (k) td.className = k; }
+        if (c.bar && barMax && v) {
+          var bar = el("span", { class: "bar" }); bar.style.width = Math.max(2, 100 * v / barMax) + "%";
+          if (c.barColor) bar.style.background = c.barColor;
+          td.appendChild(bar);
+        }
+        row.appendChild(td);
+      });
+      tbody.appendChild(row);
+    });
+    table.appendChild(tbody); wrap.appendChild(table);
+  }
+
+  function prettyToken(t) { return t.replace(/^sys\//, ""); }
+
+  var peopleSeries, launchSeries, wallSeries;
+  function drawCharts() {
+    if (!lastData) return;
+    var d = lastData;
+    renderLegend("legend-people", peopleSeries, drawCharts);
+    renderLegend("legend-launches", launchSeries, drawCharts);
+    drawChart($("chart-people"), d.series, d.range.group, peopleSeries, "line", 260);
+    drawChart($("chart-launches"), d.series, d.range.group, launchSeries, "bar", 170);
+    drawHeatmap($("chart-heat"), d.heat);
+    if (d.data.has_walltime) {
+      renderLegend("legend-walltime", wallSeries, drawCharts);
+      drawChart($("chart-walltime"), d.series, d.range.group, wallSeries, "bar", 170);
+    }
+  }
+
+  function render(d) {
+    // An app process started before the heatmap existed won't send one.
+    if (!d.heatmap || !d.heatmap.hours) d.heatmap = { hours: [], span: null, first_day: null };
+    d.heat = binHeatmap(d.heatmap);
+    $("error").hidden = true;
+    $(MAIN).hidden = false;
+    if (d.site_name) setTitle(d.site_name, "usage");
+    peopleSeries = [
+      { key: "active_users", name: "Active users", color: css("--active") },
+      { key: "sessions", name: "Sessions", color: css("--sessions") },
+      { key: "logins", name: "Logins", color: css("--logins") }
+    ];
+    launchSeries = [{ key: "launches", name: "Launches", color: css("--launches") }];
+    wallSeries = [{ key: "wall_hours", name: "Wall hours", color: css("--walltime") }];
+    Array.prototype.forEach.call(document.querySelectorAll(".walltime-only"), function (n) {
+      n.hidden = !d.data.has_walltime;
+    });
+    populateYears(d.data.first_day);
+    syncControls();
+    renderLede(d);
+    renderHeatNote(d);
+    drawCharts();
+
+    renderTable("tbl-launches", [
+      { key: "app", label: "App", text: prettyToken },
+      { key: "launches", label: "Launches", bar: true },
+      { key: "users", label: "People" },
+      { key: "failed", label: "Failed", cls: function (v) { return v ? "fail" : "zero"; } }
+    ], d.launches, "No interactive apps were launched in this range.");
+
+    renderTable("tbl-apps", [
+      { key: "app", label: "Tool" },
+      { key: "user_days", label: "User-days", bar: true, barColor: css("--active") },
+      { key: "users", label: "People" }
+    ], d.apps, "No tool usage was recorded in this range.");
+
+    if (d.data.has_walltime) {
+      renderTable("tbl-walltime", [
+        { key: "app", label: "App" },
+        { key: "wall_hours", label: "Wall hours", text: fmtH, bar: true, barColor: css("--walltime") },
+        { key: "core_hours", label: "Core hours", text: fmtH },
+        { key: "gpu_hours", label: "GPU hours", text: fmtH, cls: function (v) { return v ? "" : "zero"; } },
+        { key: "jobs", label: "Jobs" },
+        { key: "users", label: "People" }
+      ], d.walltime, "No interactive app jobs finished in this range.");
+    }
+
+    $("users-section").hidden = !d.show_top_users;
+    if (d.show_top_users) {
+      renderTable("tbl-users", [
+        { key: "user", label: "User" },
+        { key: "days_active", label: "Days active", bar: true, barColor: css("--sessions") },
+        { key: "sessions", label: "Sessions" },
+        { key: "launches", label: "Launches" }
+      ].concat(d.data.has_walltime ? [{ key: "wall_hours", label: "Wall hours", text: fmtH }] : []),
+      d.top_users, "No user activity in this range.");
+    }
+
+    var links = [[API + "series.csv?" + query(), "Download time series (CSV)"]];
+    if (d.show_top_users) links.push([API + "users.csv?" + query(), "Download per-user totals (CSV)"]);
+    renderFooter(d, links);
+  }
+
+  // ---------- events ----------
+  $("presets").addEventListener("click", function (e) {
+    var b = e.target.closest("button"); if (!b) return;
+    applyPreset(b.dataset.preset, lastData && lastData.data.first_day);
+    load();
+  });
+  ["start", "end"].forEach(function (id) {
+    $(id).addEventListener("change", function () {
+      if (!$("start").value || !$("end").value) return;
+      state.preset = "custom"; state.start = $("start").value; state.end = $("end").value;
+      load();
+    });
+  });
+  $("group").addEventListener("change", function () { state.group = $("group").value; load(); });
+  $("year").addEventListener("change", function () {
+    if (!$("year").value) return;
+    applyPreset("y" + $("year").value, null);
+    load();
+  });
+
+  var resizeTimer;
+  window.addEventListener("resize", function () { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 120); });
+  if (window.matchMedia) {
+    var mq = window.matchMedia("(prefers-color-scheme: dark)");
+    var onScheme = function () { if (lastData) renderView(lastData); };
+    if (mq.addEventListener) mq.addEventListener("change", onScheme); else if (mq.addListener) mq.addListener(onScheme);
+  }
+
+  readHash();
+  populateYears(null);
+  $("main").hidden = VIEW !== "usage";
+  $("issues-main").hidden = VIEW !== "issues";
+  $(VIEW === "issues" ? "nav-issues" : "nav-usage").setAttribute("aria-current", "page");
+  if (state.preset && state.preset !== "custom") {
+    var g = new URLSearchParams(location.hash.slice(1)).get("group");
+    applyPreset(state.preset, null);
+    if (g) state.group = g;
+  } else if (!state.start || !state.end) {
+    applyPreset("90", null);
+  }
+  load();
+})();
+</script>
+</body>
+</html>
