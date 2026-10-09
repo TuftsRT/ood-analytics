@@ -156,6 +156,33 @@
   footer a { color: inherit; }
   .loading { opacity: 0.55; transition: opacity 120ms; }
   @media (prefers-reduced-motion: reduce) { .loading { transition: none; } }
+
+  /* Printing always uses the light palette; the page adds .printing and
+     redraws the charts so their baked-in colors match. */
+  html.printing {
+    --paper: #ffffff; --surface: #ffffff; --ink: #1b2530; --muted: #5b6876;
+    --rule: #d6dde1; --grid: #e7ecee; --active: #2c6e9b; --sessions: #2f8f6f;
+    --logins: #b9781f; --launches: #74509a; --fail: #b5433a; --walltime: #8a5a3c;
+    --issue-5xx: #2a78d6; --issue-4xx: #eb6834; --issue-slow: #1baf7a;
+    --heat-lo: #9db8ce; --heat-hi: #123a59; --focus: #2c6e9b;
+    color-scheme: light;
+  }
+  @media print {
+    @page { margin: 12mm; }
+    header.top, #error, footer a, .tip, .hover-line { display: none !important; }
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { background: #fff; font-size: 12px; }
+    .wrap { max-width: none; padding: 0; }
+    .lede { margin-top: 0; max-width: none; }
+    .loading { opacity: 1; }
+    .chart svg { height: auto; }
+    .tablewrap { overflow: visible; }
+    thead th { position: static; }
+    footer { margin-top: 18px; }
+    /* Keep each chart or table with its heading, note, and legend. */
+    section, .chart, tr { break-inside: avoid; page-break-inside: avoid; }
+    section h2, section .note, .legend, .heat-scale { break-after: avoid; page-break-after: avoid; }
+  }
 </style>
 </head>
 <body>
@@ -965,6 +992,16 @@
     if (!$("year").value) return;
     applyPreset("y" + $("year").value, null);
     load();
+  });
+
+  // Redraw in the light palette for printing, then restore.
+  window.addEventListener("beforeprint", function () {
+    document.documentElement.classList.add("printing");
+    if (lastData) renderView(lastData);
+  });
+  window.addEventListener("afterprint", function () {
+    document.documentElement.classList.remove("printing");
+    if (lastData) renderView(lastData);
   });
 
   var resizeTimer;
