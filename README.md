@@ -1,5 +1,7 @@
 # ood-analytics
-Open OnDemand app that reports how your portal is used and where it's failing. A collector reads the Apache access logs (and Slurm accounting, if you use Slurm) on a timer and keeps daily aggregates in a small SQLite database, so history outlives log rotation. A read-only dashboard, installed as a system app for admins, shows logins, sessions, active users, interactive app launches and their wall time, use of the built-in tools, when people are active, and the errors and slow pages they run into.
+Open OnDemand app that provides analytics on how people are using your portal and any errors they are encountering.  Designed to be a light weight, standalone option, for those that do not need more sophisticated metrics. It requires no external servers or services beyond your existing Open OnDemand server.
+
+A collector reads the Apache access logs (and Slurm accounting, if you use Slurm) on a timer and keeps daily aggregates in a small SQLite database, so history outlives log rotation. A read-only dashboard, installed as a system app for admins, shows logins, sessions, active users, interactive app launches and their wall time, use of the built-in tools, when people are active, and the errors and slow pages they run into.
 
 ## Sample reports
 
