@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python (${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The oldest and newest supported hosts: EL8 ships Python 3.6, EL9 3.9.
+        image: ["rockylinux:8", "rockylinux:9"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Python
+        run: dnf install -y python3
+      - name: Compile
+        run: python3 -m py_compile passenger_wsgi.py ood-usage-collect tests/smoke_test.py
+      - name: Smoke test
+        run: python3 tests/smoke_test.py
+
+  javascript:
+    name: Dashboard JavaScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check syntax
+        run: |
+          python3 - <<'EOF'
+          import re
+          html = open("templates/index.html").read()
+          scripts = re.findall(r"<script>(.*?)</script>", html, re.S)
+          assert scripts, "no inline <script> found in templates/index.html"
+          open("/tmp/index.js", "w").write("\n;\n".join(scripts))
+          EOF
+          node --check /tmp/index.js

@@ -1,0 +1,35 @@
+# Appverse catalog metadata. Reference:
+# https://github.com/Sweet-and-Fizzy/ood-appverse/blob/main/docs/appverse.yml
+
+title: "Usage Statistics"
+
+description: >-
+  Analytics dashboard for Admins that shows Open OnDemand usage for the server it is installed on.
+  Logins, sessions, active users, interactive app launches,tool use, and their wall, cpu core, and GPU hours.
+  Reports include a weekday-by-hour activity heatmap, and an issues page for server errors, slow
+  pages, and failed web server starts. A root collector reads the Apache access
+  logs (and optionally Slurm accounting) on a timer and keeps daily aggregates in an internal
+  SQLite database file, so history outlives server log rotation.
+
+# Must match a Software entry in the Appverse catalog.
+software: "dashboards"
+
+app_type: "companion_app"
+
+implementation_tags:
+  - "passenger"
+
+# Discovery tags (HPC infrastructure, tools, and skills).
+tags:
+  - "slurm"
+  - "reporting"
+  - "monitoring"
+  - "analytics"
+  - "admin"
+
+maintainer:
+  name: "Tufts University Research Technology"
+  support_url: "https://github.com/TuftsRT/ood-analytics/issues"
+
+website: "https://github.com/TuftsRT/ood-analytics"
+docs: "https://github.com/TuftsRT/ood-analytics#readme"

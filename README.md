@@ -61,7 +61,7 @@ install -m 0755 ood-usage-collect /usr/local/sbin/ood-usage-collect
 install -m 0644 config.example.json /etc/ood/config/ood_usage.json
 $EDITOR /etc/ood/config/ood_usage.json   # set db_group, log_globs, user_regex, site_name
 
-# First run reads the last lookback_days (default 7); see Configuration
+# First run reads the last lookback_days (default 14); see Configuration
 /usr/local/sbin/ood-usage-collect -v
 
 # Keep it running every 15 minutes
@@ -69,14 +69,14 @@ install -m 0644 ood-usage-collect.{service,timer} /etc/systemd/system/
 systemctl daemon-reload
 systemctl enable --now ood-usage-collect.timer
 
-# Make the dashboard visible only to the admin group
+# Make the dashboard visible only to the admin group, and writable only by root
 chgrp -R ood-admins /var/www/ood/apps/sys/ood-analytics
-chmod -R o-rwx /var/www/ood/apps/sys/ood-analytics
+chmod -R g-w,o-rwx /var/www/ood/apps/sys/ood-analytics
 ```
 
 The settings most sites need to change are `log_globs` (where your access logs are), `user_regex` (to turn `jdoe01@tufts.edu` into `jdoe01`), and `db_group`. If your interactive apps set `job_name` in `submit.yml.erb`, also check `slurm_job_patterns`. Everything is described under [Configuration](#configuration).
 
-OnDemand hides a system app from anyone who can't read its directory, and the database is mode 0640 owned by `root:<db_group>`, so non-admins are blocked at both layers.
+OnDemand hides a system app from anyone who can't read its directory, and the database is mode 0640 owned by `root:<db_group>`, so non-admins are blocked at both layers. The app runs as each admin who opens it, so keep its files writable only by root; otherwise one admin could change the code and run it as the others.
 
 ### 3. Verify
 
@@ -100,7 +100,7 @@ Everything lives in `/etc/ood/config/ood_usage.json`, alongside OnDemand's own c
 
 `log_globs` should match the live access log and every rotated copy. The OnDemand default is `/var/log/httpd/<servername>_access_ssl.log`, so `*_access_ssl.log*` catches it plus rotated `-YYYYMMDD` and `.gz` files. The parser expects Apache's `combined` (or `common`) format, which is what the portal generator writes by default. Extra fields appended after the status code are fine, with one caveat: a single number after the last quoted field is read as the response time (see the issues page below).
 
-`lookback_days` (default 7) limits how far back the collector reads data it hasn't collected yet, both access-log lines and Slurm jobs. On the first run that means the last 7 days; log files last modified before then aren't opened. To backfill more for the first run, set it to a larger number, such as 365 for a year of logs still on disk and a year of Slurm accounting (roughly ten minutes on a busy cluster), then set it back. `null` removes the limit entirely; for Slurm that means querying from 1970 onward in 30-day steps, so prefer a number. If the collector hasn't run for longer than the lookback, it reads back to its last run anyway, so downtime doesn't leave a gap.
+`lookback_days` (default 14) limits how far back the collector reads data it hasn't collected yet, both access-log lines and Slurm jobs. On the first run that means the last 14 days; log files last modified before then aren't opened. To backfill more for the first run, set it to a larger number, such as 365 for a year of logs still on disk and a year of Slurm accounting (roughly ten minutes on a busy cluster), then set it back. `null` removes the limit entirely; for Slurm that means querying from 1970 onward in 30-day steps, so prefer a number. If the collector hasn't run for longer than the lookback, it reads back to its last run anyway, so downtime doesn't leave a gap.
 
 `user_regex` normalizes the Apache `%u` field. With OIDC this is the value of `OIDCRemoteUserClaim`, often an email address or ePPN, so `^([^@]+)@` reduces `jdoe01@tufts.edu` to `jdoe01`. Set it to `null` to store the field as-is. `exclude_users` drops service or monitoring accounts.
 
@@ -155,6 +155,16 @@ SELECT substr(day, 1, 7) AS month, COUNT(DISTINCT user)
 FROM usage WHERE category = 'active' GROUP BY month;
 ```
 
+## Known limitations
+
+- Wall time, core hours, and GPU hours come from Slurm accounting only. On other schedulers those sections are hidden; everything else works from the access logs alone.
+- Only daily aggregates are kept, so changes to settings such as `session_gap_minutes`, `user_regex`, or `app_patterns` apply to newly collected data only. Past days can't be recounted once their logs have rotated away.
+- History starts `lookback_days` (default 14) before the first collector run, limited to the logs still on disk.
+- Slow-page reporting needs a response time in Apache's log format (see [Issues page](#issues-page)); error counts work without it.
+- Logins are recognized by matching your identity provider's callback URL against `login_patterns`, so an IdP not covered by the defaults needs its own pattern.
+- Launch counts rely on OnDemand's interactive app form URLs and its redirect after a successful submit, so a future OnDemand change to either would need a matching collector update.
+- Wall time is counted when a job finishes, so sessions still running aren't included yet.
+
 ## Troubleshooting
 
 Run `ood-usage-collect -v` to see each file it reads and how many new lines it found. If the dashboard says it cannot read the database, check that your account is in `db_group` and that the directory `/var/lib/ood-usage` is group-readable (the collector resets this to 0750 and the file to 0640 on every run). If logins show as zero but sessions look right, your IdP callback URL doesn't match `login_patterns`; grep the access log for the redirect URI and adjust. If many logins show as `(unknown)`, users are probably reaching OnDemand through a proxy that changes the client IP between the callback and the next request; consider logging `X-Forwarded-For` as the first field.
@@ -162,6 +172,25 @@ Run `ood-usage-collect -v` to see each file it reads and how many new lines it f
 Passenger needs a Python 3 interpreter for this app. OnDemand's default `passenger_python` works on OnDemand 4.0; if you've set it in `/etc/ood/config/nginx_stage.yml`, it must point at Python 3.6 or newer (for example `/usr/bin/python3`), and users need to restart their web server from the Help menu for a change to apply.
 
 After updating the app (for example after `git pull`), restart it with `touch tmp/restart.txt` in its directory, or Help → Restart Web Server; Passenger keeps the Python code loaded until then. The page template is read on every request, so a template change alone needs only a reload.
+
+## Testing
+
+`tests/smoke_test.py` runs the collector on a small sample access log in a temporary directory, then calls every dashboard page and API endpoint and checks the counts. It uses only the Python standard library and doesn't touch `/etc` or `/var`:
+
+```bash
+python3 tests/smoke_test.py
+```
+
+The same test runs in GitHub Actions on Rocky Linux 8 and 9 for every pull request, along with a syntax check of the dashboard's JavaScript. It can also be started by hand from the repository's Actions tab.
+
+On a live install, run `/usr/local/sbin/ood-usage-collect -v` and check that it reports new lines from your access logs, then open the dashboard and compare a count you can verify independently, such as one app's launches on a given day against a count from the log itself:
+
+```bash
+grep '\[12/Oct/2026:' /var/log/httpd/<host>_access_ssl.log |
+  grep -c 'POST /pun/sys/dashboard/batch_connect/sys/<app>/session_contexts HTTP/[0-9.]*" 302'
+```
+
+Only redirects (302) count as launches; other responses are failed launches.
 
 ## Contributing
 

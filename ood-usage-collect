@@ -52,7 +52,7 @@ DEFAULTS = {
     # collected yet, e.g. on the first run. None reads everything available.
     # If the collector hasn't run for longer than this, it still reads back
     # to its last run so there's no gap.
-    "lookback_days": 7,
+    "lookback_days": 14,
     # A new "session" starts when a user is idle longer than this.
     "session_gap_minutes": 30,
     # Auth callbacks are often logged before REMOTE_USER is known. The login
