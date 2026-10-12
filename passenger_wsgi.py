@@ -6,6 +6,7 @@ ood-usage-collect. Standard library only; Python 3.6+.
 Routes (relative to the app root, e.g. /pun/sys/usage-stats/):
   /                    dashboard page
   /api/summary         JSON  ?start=YYYY-MM-DD&end=YYYY-MM-DD&group=day|week|month|year
+                             [&filter=launch:<token>|job:<slurm app>|tool:<label>]
   /api/series.csv      CSV of the time series for the same parameters
   /api/users.csv       CSV of per-user totals for the same date range
   /issues              issues page (same template, issues view)
@@ -197,7 +198,63 @@ def heatmap(conn, start, end):
     return out
 
 
-def summary(conn, cfg, start, end, group, lo, hi):
+# One interactive app (launch token), Slurm app (job name), or OnDemand tool.
+# Each maps to the categories its table counts; names aren't matched across
+# kinds because launch tokens and Slurm job names don't line up reliably.
+FOCUS_KINDS = {
+    "launch": ("('launch', 'launch_fail')", {
+        "launches": "SUM(CASE WHEN category = 'launch' THEN count ELSE 0 END)",
+        "failed": "SUM(CASE WHEN category = 'launch_fail' THEN count ELSE 0 END)",
+        "people": "COUNT(DISTINCT user)",
+    }, ["launches", "failed"], "launches DESC, failed DESC"),
+    "job": ("('job', 'walltime', 'core_time', 'gpu_time')", {
+        "jobs": "SUM(CASE WHEN category = 'job' THEN count ELSE 0 END)",
+        "wall_hours": WALL_HOURS, "core_hours": CORE_HOURS, "gpu_hours": GPU_HOURS,
+        "people": "COUNT(DISTINCT user)",
+    }, ["jobs", "wall_hours", "core_hours", "gpu_hours"], "wall_hours DESC, jobs DESC"),
+    "tool": ("('app')", {
+        "user_days": "COUNT(*)", "people": "COUNT(DISTINCT user)", "requests": "SUM(count)",
+    }, ["requests"], "days DESC, requests DESC"),
+}
+
+
+def parse_filter(environ):
+    value = parse_qs(environ.get("QUERY_STRING", "")).get("filter", [""])[0]
+    if not value:
+        return None
+    kind, _, name = value.partition(":")
+    if kind not in FOCUS_KINDS or not name:
+        raise HTTPError("400 Bad Request", "filter must be launch:, job:, or tool: followed by a name")
+    return kind, name
+
+
+def focus(conn, cfg, kind, name, start, end, group):
+    cats, measures, user_cols, order = FOCUS_KINDS[kind]
+    rng = (start.isoformat(), end.isoformat())
+    where = "category IN %s AND item = ? AND day BETWEEN ? AND ?" % cats
+    cols = ", ".join("%s AS %s" % (sql, key) for key, sql in measures.items())
+    t = conn.execute("SELECT %s FROM usage WHERE %s" % (cols, where), (name,) + rng).fetchone()
+    by_period = {r["period"]: dict(r) for r in conn.execute(
+        "SELECT %s AS period, %s FROM usage WHERE %s GROUP BY period" % (PERIOD_SQL[group], cols, where),
+        (name,) + rng)}
+    series_rows = []
+    for key in all_periods(start, end, group):
+        row = dict.fromkeys(measures, 0)
+        row.update({k: v or 0 for k, v in by_period.get(key, {}).items()})
+        row["period"] = key
+        series_rows.append(row)
+    users = []
+    if cfg.get("show_top_users", True):
+        ucols = ", ".join("%s AS %s" % (measures[k], k) for k in user_cols)
+        users = [dict(r) for r in conn.execute(
+            "SELECT user, COUNT(DISTINCT day) AS days, %s FROM usage WHERE %s AND user NOT IN (?, '') "
+            "GROUP BY user ORDER BY %s, user LIMIT 25" % (ucols, where, order),
+            (name,) + rng + (UNKNOWN_USER,))]
+    return {"kind": kind, "name": name, "totals": {k: (t[k] or 0) for k in t.keys()},
+            "series": series_rows, "users": users}
+
+
+def summary(conn, cfg, start, end, group, lo, hi, flt=None):
     rng = (start.isoformat(), end.isoformat())
     t = conn.execute("""
         SELECT
@@ -272,6 +329,7 @@ def summary(conn, cfg, start, end, group, lo, hi):
         "apps": apps,
         "walltime": walltime,
         "heatmap": heatmap(conn, start, end),
+        "focus": focus(conn, cfg, flt[0], flt[1], start, end, group) if flt else None,
         "top_users": top_users,
         "show_top_users": bool(cfg.get("show_top_users", True)),
     }
@@ -451,7 +509,8 @@ def application(environ, start_response):
                                      issues(conn, cfg, start, end, group, lo, hi))
             if path == "/api/summary":
                 return json_response(start_response, "200 OK",
-                                     summary(conn, cfg, start, end, group, lo, hi))
+                                     summary(conn, cfg, start, end, group, lo, hi,
+                                             parse_filter(environ)))
             if path == "/api/series.csv":
                 return csv_response(
                     start_response, "ood-usage-%s-%s-by-%s.csv" % (start, end, group),

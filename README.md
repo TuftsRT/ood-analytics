@@ -1,14 +1,22 @@
 # ood-analytics
 Open OnDemand app that reports how your portal is used and where it's failing. A collector reads the Apache access logs (and Slurm accounting, if you use Slurm) on a timer and keeps daily aggregates in a small SQLite database, so history outlives log rotation. A read-only dashboard, installed as a system app for admins, shows logins, sessions, active users, interactive app launches and their wall time, use of the built-in tools, when people are active, and the errors and slow pages they run into.
 
-<!-- TODO: add a screenshot of the usage page, e.g.
-<img width="935" alt="ood-analytics usage page" src="https://github.com/user-attachments/assets/..." /> -->
+## Sample reports
+
+A year of simulated data for a campus portal, grouped by week.
+
+<img width="935" alt="People and sessions: weekly active users, sessions, and logins over a year, dipping over winter break and summer" src="docs/images/people-sessions.png" />
+
+<img width="935" alt="Interactive app launches: weekly launch counts over a year" src="docs/images/app-launches.png" />
+
+<img width="935" alt="When people use OnDemand: day-of-week by hour-of-day heatmap, busiest on weekday afternoons" src="docs/images/usage-heatmap.png" />
 
 # Features
 - Logins, sessions, and active users by day, week, month, or year, with presets, calendar years, and custom ranges
 - Interactive app launches and failed launches, by app
 - Interactive app wall time, core hours, and GPU hours from Slurm accounting (detected automatically from your OnDemand cluster configs)
 - Use of Files, Shell, Active Jobs, Job Composer, and any other Passenger app
+- Click any interactive app or tool name to see its own trend and top users
 - Day-of-week by hour-of-day activity heatmap, shown in each viewer's own time zone
 - Issues page: server and client errors by area, failed personal web server starts, slow pages, and the people most affected
 - Most active users, plus CSV downloads of the time series and per-user totals
@@ -114,6 +122,8 @@ An **interactive app launch** is a `POST` to `.../batch_connect/<app>/session_co
 
 The **day-of-week by hour-of-day heatmap** shows the average number of distinct people active in each hour, in the viewer's own time zone (named above the chart). The collector stores each active hour in UTC, taken from the offset on the log line, and the browser places it on its local weekday and hour, so daylight-saving changes are handled. Each cell averages over every time that local hour occurs in the selected range within the collected hourly history, so quiet hours count as zero and time before hourly collection began doesn't dilute it. Hourly data is only recorded from the version that added the heatmap onward; earlier history has daily totals only.
 
+Clicking an app or tool name in the interactive apps, wall time, or tools table filters the usage page to just that item: its own totals, trend charts, and top users for the selected range, until you choose **Show everything**. The filter is kept in the URL, so a filtered view can be bookmarked or shared. Launches and wall time are filtered separately, because launch names (form tokens such as `sys/matlab_server`) and wall-time names (Slurm job names such as `matlab`) don't reliably match. The heatmap isn't broken down by app.
+
 **User-days** for a tool counts each person once per day they made a non-static request to it. Requests for JavaScript, CSS, images, and fonts are ignored for tool counts so page loads don't inflate the numbers.
 
 Days are in the server's local time as written in the log, and the dashboard footer names that time zone. Weeks start on Sunday, in the weekly grouping and the heatmap alike. The Year menu selects a calendar year; the current year runs through today.
@@ -134,7 +144,7 @@ From then on the collector records a response-time histogram per area (median an
 
 The dashboard is backed by four read-only endpoints, all taking `start` and `end` as `YYYY-MM-DD` and `group` as `day`, `week`, `month`, or `year`:
 
-`api/summary` returns everything on the usage page as JSON, and `api/issues` everything on the issues page. `api/series.csv` returns the time series. `api/users.csv` returns per-user totals for the range (disabled when `show_top_users` is false).
+`api/summary` returns everything on the usage page as JSON, and `api/issues` everything on the issues page. `api/summary` also takes `filter=launch:<token>`, `filter=job:<Slurm app>`, or `filter=tool:<label>` and then adds a `focus` object for that one item. `api/series.csv` returns the time series. `api/users.csv` returns per-user totals for the range (disabled when `show_top_users` is false).
 
 Because the database is plain SQLite with a simple schema, you can also query it directly or ship it elsewhere. For example, distinct users by month for all time:
 

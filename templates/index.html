@@ -17,6 +17,7 @@
     --logins: #b9781f;
     --launches: #74509a;
     --fail: #b5433a;
+    --warn: #b9781f;
     --walltime: #8a5a3c;
     --issue-5xx: #2a78d6;
     --issue-4xx: #eb6834;
@@ -39,6 +40,7 @@
       --logins: #e0a44e;
       --launches: #ae8bd2;
       --fail: #e07a70;
+      --warn: #e0a44e;
       --walltime: #d39d7a;
       --issue-5xx: #3987e5;
       --issue-4xx: #d95926;
@@ -92,7 +94,7 @@
   .lede {
     font-size: clamp(1.25rem, 2.4vw, 1.75rem);
     line-height: 1.35; font-weight: 400;
-    max-width: 46ch; margin: 28px 0 6px;
+     margin: 28px 0 6px;
   }
   .lede b { font-weight: 650; }
   .lede .k-active { color: var(--active); }
@@ -100,11 +102,11 @@
   .lede .k-logins { color: var(--logins); }
   .lede .k-launches { color: var(--launches); }
   .lede .k-walltime { color: var(--walltime); }
-  .sub { color: var(--muted); margin: 0 0 24px; max-width: 80ch; font-size: 0.9rem; }
+  .sub { color: var(--muted); margin: 0 0 24px;  font-size: 0.9rem; }
 
   section { margin-top: 28px; }
   section h2 { font-size: 0.95rem; font-weight: 600; margin: 0 0 4px; }
-  section .note { color: var(--muted); font-size: 0.85rem; margin: 0 0 10px; max-width: 80ch; }
+  section .note { color: var(--muted); font-size: 0.85rem; margin: 0 0 10px; }
 
   .chart { position: relative; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 10px 6px 4px; }
   .chart svg { display: block; width: 100%; overflow: visible; }
@@ -144,6 +146,16 @@
   td.fail { color: var(--fail); }
   td.zero { color: var(--muted); }
   .empty { padding: 18px 12px; color: var(--muted); font-size: 0.875rem; }
+  .linkish {
+    font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-align: left;
+    text-decoration: underline; text-decoration-color: var(--rule); text-underline-offset: 3px;
+  }
+  .linkish:hover { text-decoration-color: currentColor; }
+  .filterbar {
+    display: inline-flex; flex-wrap: wrap; gap: 6px 14px; align-items: baseline; margin: 24px 0 0;
+    padding: 7px 12px; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; font-size: 0.9rem;
+  }
+  .filterbar .linkish { color: var(--muted); }
 
   .error {
     margin-top: 28px; padding: 14px 16px; border-left: 3px solid var(--fail);
@@ -151,6 +163,12 @@
   }
   .error h2 { margin: 0 0 4px; font-size: 1rem; }
   .error p { margin: 0; color: var(--muted); }
+  .warning {
+    margin-top: 28px; padding: 14px 16px; border-left: 3px solid var(--warn);
+    background: var(--surface); max-width: 80ch;
+  }
+  .warning h2 { margin: 0 0 4px; font-size: 1rem; }
+  .warning p { margin: 0; color: var(--muted); }
 
   footer { margin-top: 36px; padding-top: 12px; border-top: 1px solid var(--rule); color: var(--muted); font-size: 0.8rem; display: flex; flex-wrap: wrap; gap: 6px 24px; }
   footer a { color: inherit; }
@@ -162,14 +180,14 @@
   html.printing {
     --paper: #ffffff; --surface: #ffffff; --ink: #1b2530; --muted: #5b6876;
     --rule: #d6dde1; --grid: #e7ecee; --active: #2c6e9b; --sessions: #2f8f6f;
-    --logins: #b9781f; --launches: #74509a; --fail: #b5433a; --walltime: #8a5a3c;
+    --logins: #b9781f; --launches: #74509a; --fail: #b5433a; --warn: #b9781f; --walltime: #8a5a3c;
     --issue-5xx: #2a78d6; --issue-4xx: #eb6834; --issue-slow: #1baf7a;
     --heat-lo: #9db8ce; --heat-hi: #123a59; --focus: #2c6e9b;
     color-scheme: light;
   }
   @media print {
     @page { margin: 12mm; }
-    header.top, #error, footer a, .tip, .hover-line { display: none !important; }
+    header.top, #error, footer a, .tip, .hover-line, #focus-clear { display: none !important; }
     * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     body { background: #fff; font-size: 12px; }
     .wrap { max-width: none; padding: 0; }
@@ -225,7 +243,13 @@
        Database: <code>__DB_PATH__</code></p>
   </div>
 
+  <div id="stale" class="warning" role="status" hidden>
+    <h2>Usage data may be out of date</h2>
+    <p id="stale-msg"></p>
+  </div>
+
   <main id="main">
+   <div id="usage-all">
     <p class="lede" id="lede">Loading usage…</p>
     <p class="sub" id="sub"></p>
 
@@ -280,6 +304,33 @@
       <p class="note">Top 25 by days active in the selected range.</p>
       <div class="tablewrap" id="tbl-users"></div>
     </section>
+   </div>
+
+   <!-- One interactive app, Slurm app, or tool, chosen by clicking its name. -->
+   <div id="usage-focus" hidden>
+    <p class="filterbar"><span id="focus-label"></span>
+      <button type="button" class="linkish" id="focus-clear">Show everything</button></p>
+    <p class="lede" id="focus-lede"></p>
+    <p class="sub" id="focus-sub"></p>
+
+    <section>
+      <h2 id="focus-h1"></h2>
+      <ul class="legend" id="legend-focus-1"></ul>
+      <div class="chart" id="chart-focus-1"></div>
+    </section>
+
+    <section id="focus-sec-2">
+      <h2 id="focus-h2"></h2>
+      <ul class="legend" id="legend-focus-2"></ul>
+      <div class="chart" id="chart-focus-2"></div>
+    </section>
+
+    <section id="focus-users-section">
+      <h2>Top users</h2>
+      <p class="note" id="focus-users-note"></p>
+      <div class="tablewrap" id="tbl-focus-users"></div>
+    </section>
+   </div>
   </main>
 
   <main id="issues-main" hidden>
@@ -341,7 +392,7 @@
   var css = function (name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); };
   var SVGNS = "http://www.w3.org/2000/svg";
 
-  var state = { start: null, end: null, group: "week", preset: "90" };
+  var state = { start: null, end: null, group: "week", preset: "90", filter: null };
   var lastData = null;
   var hidden = {};
 
@@ -372,6 +423,8 @@
     if (h.get("end")) state.end = h.get("end");
     if (h.get("group")) state.group = h.get("group");
     if (h.get("start") && h.get("end") && !h.get("preset")) state.preset = "custom";
+    var f = /^(launch|job|tool):(.+)$/.exec(h.get("filter") || "");
+    state.filter = f ? { kind: f[1], name: f[2] } : null;
   }
   function writeHash() {
     var h = new URLSearchParams();
@@ -381,6 +434,7 @@
       h.set("start", state.start); h.set("end", state.end);
     }
     h.set("group", state.group);
+    if (state.filter) h.set("filter", state.filter.kind + ":" + state.filter.name);
     history.replaceState(null, "", "#" + h.toString());
     // Keep the range when switching reports.
     $("nav-usage").href = BASE + "/#" + h.toString();
@@ -433,7 +487,8 @@
 
   function query() {
     return "start=" + encodeURIComponent(state.start) + "&end=" + encodeURIComponent(state.end) +
-           "&group=" + encodeURIComponent(state.group);
+           "&group=" + encodeURIComponent(state.group) +
+           (state.filter && VIEW === "usage" ? "&filter=" + encodeURIComponent(state.filter.kind + ":" + state.filter.name) : "");
   }
 
   function load() {
@@ -466,10 +521,24 @@
   function showError(err) {
     $("error-msg").textContent = err.message;
     $("error").hidden = false;
+    $("stale").hidden = true;
     $(MAIN).hidden = true;
   }
 
-  function renderView(d) { if (VIEW === "issues") renderIssues(d); else render(d); }
+  function renderView(d) { renderStale(d.data.last_collected); if (VIEW === "issues") renderIssues(d); else render(d); }
+
+  // The collector runs every 15 minutes, so a day without a run means it has stopped.
+  var STALE_AFTER = 24 * 3600;
+  function renderStale(lastCollected) {
+    var age = lastCollected ? Date.now() / 1000 - lastCollected : null;
+    $("stale").hidden = age !== null && age < STALE_AFTER;
+    if ($("stale").hidden) return;
+    $("stale-msg").textContent = age === null
+      ? "ood-usage-collect hasn't finished a run yet, so these figures may be empty or incomplete. Check ood-usage-collect.timer and its journal."
+      : "ood-usage-collect last ran " + new Date(lastCollected * 1000).toLocaleString() + " (" +
+        Math.floor(age / 86400) + (Math.floor(age / 86400) === 1 ? " day" : " days") +
+        " ago). Activity since then is missing. Check ood-usage-collect.timer and its journal.";
+  }
   function redraw() { if (VIEW === "issues") drawIssueCharts(); else drawCharts(); }
 
   function setTitle(siteName, word) {
@@ -489,6 +558,8 @@
     }
     if (d.data.last_collected) f.appendChild(el("span", null, "Collected " + new Date(d.data.last_collected * 1000).toLocaleString()));
     (links || []).forEach(function (l) { f.appendChild(el("a", { href: l[0] }, l[1])); });
+    f.appendChild(el("a", { href: "https://github.com/TuftsRT/ood-analytics", target: "_blank", rel: "noopener" },
+                     "ood-analytics on GitHub"));
   }
 
   // ---------- issues view ----------
@@ -879,7 +950,13 @@
       var row = el("tr");
       columns.forEach(function (c, ci) {
         var v = r[c.key];
-        var td = el(ci === 0 ? "th" : "td", ci === 0 ? { scope: "row" } : null, c.text ? c.text(v) : (typeof v === "number" ? fmt(v) : v));
+        var label = c.text ? c.text(v) : (typeof v === "number" ? fmt(v) : v);
+        var td = el(ci === 0 ? "th" : "td", ci === 0 ? { scope: "row" } : null, c.click ? null : label);
+        if (c.click) {
+          var btn = el("button", { type: "button", class: "linkish", title: "Show only " + label }, label);
+          btn.addEventListener("click", function () { c.click(r); });
+          td.appendChild(btn);
+        }
         if (ci === 0) td.style.fontWeight = "400";
         if (c.cls) { var k = c.cls(v); if (k) td.className = k; }
         if (c.bar && barMax && v) {
@@ -896,10 +973,85 @@
 
   function prettyToken(t) { return t.replace(/^sys\//, ""); }
 
+  function setFilter(kind, name) {
+    state.filter = kind ? { kind: kind, name: name } : null;
+    load();
+    window.scrollTo(0, 0);
+  }
+
+  var FOCUS_KIND = { launch: "interactive app", job: "interactive app wall time", tool: "OnDemand tool" };
+  var focusCharts = [];  // [{ heading, series, kind, height }] for one or two charts
+
+  function drawFocusCharts() {
+    var f = lastData.focus;
+    focusCharts.forEach(function (c, i) {
+      var n = i + 1;
+      renderLegend("legend-focus-" + n, c.series, drawFocusCharts);
+      drawChart($("chart-focus-" + n), f.series, lastData.range.group, c.series, c.kind, c.height);
+    });
+  }
+
+  function renderFocus(d) {
+    var f = d.focus, t = f.totals, name = f.kind === "launch" ? prettyToken(f.name) : f.name;
+    var label = $("focus-label");
+    label.textContent = "Showing only ";
+    label.appendChild(el("b", null, name));
+    label.appendChild(document.createTextNode(" (" + FOCUS_KIND[f.kind] + ")"));
+
+    var range = "From " + rangeText(d) + ", ", lede, sub = "", people = fmt(t.people) + (t.people === 1 ? " person" : " people");
+    if (f.kind === "launch") {
+      lede = range + people + " launched " + name + " " + fmt(t.launches) + (t.launches === 1 ? " time." : " times.");
+      if (t.failed) sub = fmt(t.failed) + (t.failed === 1 ? " launch attempt" : " launch attempts") + " failed.";
+      focusCharts = [{ heading: "Launches", kind: "line", height: 240, series: [
+        { key: "launches", name: "Launches", color: css("--launches") },
+        { key: "failed", name: "Failed", color: css("--fail") },
+        { key: "people", name: "People", color: css("--active") }] }];
+    } else if (f.kind === "job") {
+      lede = range + people + " ran " + name + " for " + fmtH(t.wall_hours) + " wall hours across " +
+             fmt(t.jobs) + (t.jobs === 1 ? " job." : " jobs.");
+      sub = fmtH(t.core_hours) + " core hours" + (t.gpu_hours ? " and " + fmtH(t.gpu_hours) + " GPU hours" : "") + ".";
+      focusCharts = [
+        { heading: "Wall hours", kind: "bar", height: 200, series: [
+          { key: "wall_hours", name: "Wall hours", color: css("--walltime") }] },
+        { heading: "Jobs and people", kind: "line", height: 200, series: [
+          { key: "jobs", name: "Jobs", color: css("--launches") },
+          { key: "people", name: "People", color: css("--active") }] }];
+    } else {
+      lede = range + people + " used " + name + " on " + fmt(t.user_days) + " user-days, making " +
+             fmt(t.requests) + (t.requests === 1 ? " request." : " requests.");
+      focusCharts = [{ heading: "User-days and people", kind: "line", height: 240, series: [
+        { key: "user_days", name: "User-days", color: css("--sessions") },
+        { key: "people", name: "People", color: css("--active") }] }];
+    }
+    $("focus-lede").textContent = lede;
+    $("focus-sub").textContent = sub;
+    focusCharts.forEach(function (c, i) { $("focus-h" + (i + 1)).textContent = c.heading; });
+    $("focus-sec-2").hidden = focusCharts.length < 2;
+    drawFocusCharts();
+
+    $("focus-users-section").hidden = !d.show_top_users;
+    if (d.show_top_users) {
+      var cols = {
+        launch: [{ key: "launches", label: "Launches", bar: true, barColor: css("--launches") },
+                 { key: "failed", label: "Failed", cls: function (v) { return v ? "fail" : "zero"; } },
+                 { key: "days", label: "Days launched" }],
+        job: [{ key: "wall_hours", label: "Wall hours", text: fmtH, bar: true, barColor: css("--walltime") },
+              { key: "core_hours", label: "Core hours", text: fmtH },
+              { key: "gpu_hours", label: "GPU hours", text: fmtH, cls: function (v) { return v ? "" : "zero"; } },
+              { key: "jobs", label: "Jobs" }],
+        tool: [{ key: "days", label: "Days used", bar: true, barColor: css("--sessions") },
+               { key: "requests", label: "Requests" }]
+      }[f.kind];
+      $("focus-users-note").textContent = "Top 25 by " + cols[0].label.toLowerCase() + " in the selected range.";
+      renderTable("tbl-focus-users", [{ key: "user", label: "User" }].concat(cols), f.users, "Nobody used this in the selected range.");
+    }
+  }
+
   var peopleSeries, launchSeries, wallSeries;
   function drawCharts() {
     if (!lastData) return;
     var d = lastData;
+    if (d.focus) return drawFocusCharts();
     renderLegend("legend-people", peopleSeries, drawCharts);
     renderLegend("legend-launches", launchSeries, drawCharts);
     drawChart($("chart-people"), d.series, d.range.group, peopleSeries, "line", 260);
@@ -930,26 +1082,35 @@
     });
     populateYears(d.data.first_day);
     syncControls();
+    $("usage-all").hidden = !!d.focus;
+    $("usage-focus").hidden = !d.focus;
+    var links = [[API + "series.csv?" + query(), "Download time series (CSV)"]];
+    if (d.show_top_users) links.push([API + "users.csv?" + query(), "Download per-user totals (CSV)"]);
+    if (d.focus) {
+      renderFocus(d);
+      renderFooter(d, links);
+      return;
+    }
     renderLede(d);
     renderHeatNote(d);
     drawCharts();
 
     renderTable("tbl-launches", [
-      { key: "app", label: "App", text: prettyToken },
+      { key: "app", label: "App", text: prettyToken, click: function (r) { setFilter("launch", r.app); } },
       { key: "launches", label: "Launches", bar: true },
       { key: "users", label: "People" },
       { key: "failed", label: "Failed", cls: function (v) { return v ? "fail" : "zero"; } }
     ], d.launches, "No interactive apps were launched in this range.");
 
     renderTable("tbl-apps", [
-      { key: "app", label: "Tool" },
+      { key: "app", label: "Tool", click: function (r) { setFilter("tool", r.app); } },
       { key: "user_days", label: "User-days", bar: true, barColor: css("--active") },
       { key: "users", label: "People" }
     ], d.apps, "No tool usage was recorded in this range.");
 
     if (d.data.has_walltime) {
       renderTable("tbl-walltime", [
-        { key: "app", label: "App" },
+        { key: "app", label: "App", click: function (r) { setFilter("job", r.app); } },
         { key: "wall_hours", label: "Wall hours", text: fmtH, bar: true, barColor: css("--walltime") },
         { key: "core_hours", label: "Core hours", text: fmtH },
         { key: "gpu_hours", label: "GPU hours", text: fmtH, cls: function (v) { return v ? "" : "zero"; } },
@@ -969,12 +1130,11 @@
       d.top_users, "No user activity in this range.");
     }
 
-    var links = [[API + "series.csv?" + query(), "Download time series (CSV)"]];
-    if (d.show_top_users) links.push([API + "users.csv?" + query(), "Download per-user totals (CSV)"]);
     renderFooter(d, links);
   }
 
   // ---------- events ----------
+  $("focus-clear").addEventListener("click", function () { setFilter(null); });
   $("presets").addEventListener("click", function (e) {
     var b = e.target.closest("button"); if (!b) return;
     applyPreset(b.dataset.preset, lastData && lastData.data.first_day);
