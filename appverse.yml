@@ -1,7 +1,7 @@
 # Appverse catalog metadata. Reference:
 # https://github.com/Sweet-and-Fizzy/ood-appverse/blob/main/docs/appverse.yml
 
-title: "Usage Statistics"
+title: "Usage Analytics"
 
 description: >-
   Analytics dashboard for Admins that shows Open OnDemand usage for the server it is installed on.
